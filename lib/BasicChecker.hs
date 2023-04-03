@@ -1,4 +1,7 @@
 module BasicChecker where
+import Control.Monad.State
+
+import Data.Functor ((<&>))
 
 todo = undefined
 
@@ -7,11 +10,13 @@ todo = undefined
 data Constant
   = CNOp InterpOp
   | CNInt Int
+  | CNBool Bool
   deriving (Eq)
 
 instance Show Constant where
   show (CNOp op) = show op
   show (CNInt i) = show i
+  show (CNBool b) = show b
 
 type Variable = String
 
@@ -43,6 +48,8 @@ data Term
   | TLam Variable Term
   | TApp Term Variable
   | TAnn Term Type
+  | TCond Variable Term Term
+  | TRec Variable Term Type Term
   deriving (Eq)
 
 instance Show Term where
@@ -52,6 +59,8 @@ instance Show Term where
   show (TLam v body) = "lambda " ++ v ++ ". (" ++ show body ++ ")"
   show (TApp term v) = "(" ++ show term ++ ") " ++ v
   show (TAnn term typ) = "(" ++ show term ++ ") : " ++ show typ
+  show (TCond v tt tf) = "if (" ++ v ++ ") then (" ++ show tt ++ ") else (" ++ show tf ++ ")"
+  show (TRec x e t e1) = "rec " ++ x ++ " = (" ++ show e ++ ") : " ++ show t ++ " in (" ++ show e1 ++ ")"
 
 data Predicate
   = PVar Variable
@@ -94,10 +103,12 @@ instance Show Constraint where
 
 data BasicType
   = BInt
+  | BBool
   deriving (Eq)
 
 instance Show BasicType where
   show BInt = "int"
+  show BBool = "bool"
 
 data Refinement
   = RKnown Binder Predicate
@@ -147,6 +158,8 @@ trefine = RKnown "v"
 prim :: Constant -> Type
 prim (CNInt i) = iprim i
 prim (CNOp op) = oprim op
+prim (CNBool True) = TRBase BBool $ RKnown "b" (PVar "b")
+prim (CNBool False) = TRBase BBool $ RKnown "b" $ PNeg (PVar "b")
 
 -- iprim(i) := int(v: v == i)
 iprim :: Int -> Type
@@ -201,33 +214,67 @@ sub (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) =
     co = sub (subst t1 x1 (PVar x2)) t2
 sub _ _ = undefined
 
+-- Algorithmic state
+
+newtype ConstraintState = ConstraintState {_next_fresh :: Int}
+
+defaultState :: ConstraintState
+defaultState = ConstraintState 0
+
+type Gen = State ConstraintState
+
+gensym :: Gen String
+gensym = do
+  s <- get
+  let (ConstraintState r) = s
+  put $ s {_next_fresh = r + 1}
+  return $ "y" ++ show r
+
 -- Algorithmic synthesis
-synth :: Context -> Term -> (Constraint, Type)
-synth g (TVar x) = (CPred (PBool True), g x)
-synth _ (TConst c) = (CPred (PBool True), prim c)
-synth g (TApp e y) = (CAnd c c1, subst t x (PVar y))
-  where
-    (c, TDepFn x s t) = synth g e
-    c1 = check g (TVar y) s
-synth g (TAnn e t) = (c, t)
-  where
-    c = check g e t
+synth :: Context -> Term -> Gen (Constraint, Type)
+synth g (TVar x) = return (CPred $ PBool True, self x (g x))
+  -- chapter 3 version: 
+  -- return (CPred (PBool True), g x)
+synth _ (TConst c) = return (CPred $ PBool True, prim c)
+synth g (TApp e y) = do
+  synR <- synth g e
+  let (c, TDepFn x s t) = synR
+  c1 <- check g (TVar y) s
+  return (CAnd c c1, subst t x (PVar y))
+synth g (TAnn e t) = do
+  c <- check g e t
+  return (c, t)
 synth _ _ = undefined
 
 -- Algorithmic checking
-check :: Context -> Term -> Type -> Constraint
+check :: Context -> Term -> Type -> Gen Constraint
 check g (TLam x e) (TDepFn x0 s t)
-  | x == x0 = cimp x s c
-  where
-    c = check (cxExtend g x s) e t
-check g (TLet x e1 e2) t2 = CAnd c1 (cimp x t1 c2)
-  where
-    (c1, t1) = synth g e1
-    c2 = check (cxExtend g x t1) e2 t2
-check g e t = CAnd c c1
-  where
-    (c, s) = synth g e
-    c1 = sub s t
+  | x == x0 = do
+    c <- check (cxExtend g x s) e t
+    return $ cimp x s c
+check g (TLet x e1 e2) t2 = do
+  (c1, t1) <- synth g e1
+  c2 <- check (cxExtend g x t1) e2 t2
+  return $ CAnd c1 (cimp x t1 c2)
+check g (TCond x e1 e2) t = do
+  y <- gensym
+  c1 <- check g e1 t <&> cimp y (TRBase BInt (trefine (PVar x)))
+  c2 <- check g e2 t <&> cimp y (TRBase BInt (trefine (PNeg (PVar x))))
+  return $ CAnd c1 c2
+check g (TRec x e1 t1 e2) t = do
+  let g1 = cxExtend g x t1
+  c1 <- check g1 e1 t
+  c2 <- check g1 e2 t
+  return $ CAnd c1 c2
+check g e t = do
+  (c, s) <- synth g e
+  let c1 = sub s t
+  return $ CAnd c c1
+
+
+self :: Variable -> Type -> Type
+self x (TRBase b (RKnown v p)) = TRBase b (RKnown v (PAnd p (PInterpOp Equal (PVar v) (PVar x))))
+self _ t = t
 
 -- Remove some tautologies from the output (closer matches the paper)
 cleanupConstraint :: Constraint -> Constraint
@@ -253,6 +300,9 @@ cleanupConstraint c = case clean c of
 
 ------ Tests
 
+testCheck :: Context -> Term -> Type -> Constraint
+testCheck gamma0 inc t0 = cleanupConstraint (evalState (check gamma0 inc t0) defaultState )
+
 subTest :: Constraint
 subTest = sub example36Sub example36Sup
   where
@@ -274,14 +324,14 @@ nat :: Type
 nat = TRBase BInt (RKnown "n" (PInterpOp Leq (PInt 0) (PVar "n")))
 
 vcTest1 :: Constraint
-vcTest1 = cleanupConstraint $ check gamma0 inc t0
+vcTest1 = testCheck gamma0 inc t0
   where
     gamma0 = cxExtend (cxExtend cxEmpty "one" (TRBase BInt (RKnown "one" (PInterpOp Equal (PVar "one") (PInt 1))))) "x" nat
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
 
 vcTest2 :: Constraint
-vcTest2 = cleanupConstraint $ check gamma1 term1 t0
+vcTest2 = testCheck gamma1 term1 t0
   where
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
@@ -289,7 +339,7 @@ vcTest2 = cleanupConstraint $ check gamma1 term1 t0
     term1 = TLet "one" (TConst (CNInt 1)) inc
 
 vcTest3 :: Constraint
-vcTest3 = cleanupConstraint $ check cxEmpty term3 typ3
+vcTest3 = testCheck cxEmpty term3 typ3
   where
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
     term1 = TLet "one" (TConst (CNInt 1)) inc
