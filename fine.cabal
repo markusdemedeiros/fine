@@ -25,10 +25,29 @@ executable fine
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules:  Typecheck,
+                    Refinements,
+                    Imp,
+                    Util,
+                    STLC,
+                    BasicChecker
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    base ^>=4.16.4.0
-    hs-source-dirs:   app
+    build-depends:    base >=4.16.4.0,
+                      what4 ^>=1.4,
+                      lens ^>=5.2,
+                      containers ^>=0.6.5.1,
+                      text ^>=1.2.5.0,
+                      recursion-schemes ^>=5.2.2.2,
+                      data-fix ^>=0.3.2,
+                      containers ^>= 0.6.7,
+                      unordered-containers ^>= 0.2.19.1,
+                      hashable ^>= 1.4.2.0,
+                      mtl ^>= 2.2.2,
+                      HUnit ^>= 1.6.2.0
+
+
+    hs-source-dirs:   app,
+                      lib
     default-language: Haskell2010
