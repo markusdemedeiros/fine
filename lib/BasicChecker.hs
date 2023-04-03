@@ -1,9 +1,11 @@
+{-# LANGUAGE InstanceSigs #-}
+
 module BasicChecker where
+
 import Control.Monad.State
-
 import Data.Functor ((<&>))
-
-todo = undefined
+import Data.List (intercalate)
+import Util
 
 -- Syntax for STLC with QF-UFLIA
 
@@ -62,6 +64,13 @@ instance Show Term where
   show (TCond v tt tf) = "if (" ++ v ++ ") then (" ++ show tt ++ ") else (" ++ show tf ++ ")"
   show (TRec x e t e1) = "rec " ++ x ++ " = (" ++ show e ++ ") : " ++ show t ++ " in (" ++ show e1 ++ ")"
 
+data HornVariable
+  = HornVariable Variable BasicType [Type]
+  deriving (Eq)
+
+instance Show HornVariable where
+  show (HornVariable v b tys) = "kappa{" ++ v ++ "}@(" ++ show b ++ " | " ++ intercalate ", " (fmap show tys) ++ ")"
+
 data Predicate
   = PVar Variable
   | PBool Bool
@@ -72,6 +81,7 @@ data Predicate
   | PNeg Predicate
   | PIf Predicate Predicate Predicate
   | PUninterpFun Variable Predicate -- ??
+  | PHornApp HornVariable [Variable]
   deriving (Eq)
 
 instance Show Predicate where
@@ -84,6 +94,7 @@ instance Show Predicate where
   show (PNeg p) = "!(" ++ show p ++ ")"
   show (PIf pc pt pf) = "if " ++ show pc ++ " then " ++ show pt ++ " else " ++ show pf
   show (PUninterpFun v p) = v ++ "(" ++ show p ++ ")"
+  show (PHornApp h vs) = show h ++ "(" ++ intercalate ", " vs ++ ")"
 
 data Constraint
   = CPred Predicate
@@ -112,10 +123,12 @@ instance Show BasicType where
 
 data Refinement
   = RKnown Binder Predicate
+  | Hole
   deriving (Eq)
 
 instance Show Refinement where
   show (RKnown v p) = "{" ++ v ++ ": " ++ show p ++ "}"
+  show Hole = "{*}"
 
 data Type
   = TRBase BasicType Refinement
@@ -133,15 +146,8 @@ cimp x (TRBase b (RKnown v p)) c = CFun x b (subst p v (PVar x)) c
 cimp _ _ c = c
 
 ------ functional contexts
-type Context = Variable -> Type
 
-cxExtend :: Context -> Variable -> Type -> Context
-cxExtend c v t test
-  | test == v = t
-  | otherwise = c test
-
-cxEmpty :: Context
-cxEmpty v = error ("bad lookup of " ++ show v)
+type Context = Table Variable Type
 
 ------ abbreviations
 -- b        abbreviates   b{v: true}
@@ -228,20 +234,21 @@ gensym = do
   s <- get
   let (ConstraintState r) = s
   put $ s {_next_fresh = r + 1}
-  return $ "y" ++ show r
+  return $ "tmp." ++ show r
 
 -- Algorithmic synthesis
 synth :: Context -> Term -> Gen (Constraint, Type)
-synth g (TVar x) = return (CPred $ PBool True, self x (g x))
-  -- chapter 3 version: 
-  -- return (CPred (PBool True), g x)
+synth g (TVar x) = return (CPred $ PBool True, self x (getTbl g x))
+-- chapter 3 version:
+-- return (CPred (PBool True), g x)
 synth _ (TConst c) = return (CPred $ PBool True, prim c)
 synth g (TApp e y) = do
   synR <- synth g e
   let (c, TDepFn x s t) = synR
   c1 <- check g (TVar y) s
   return (CAnd c c1, subst t x (PVar y))
-synth g (TAnn e t) = do
+synth g (TAnn e s) = do
+  t <- fresh g s
   c <- check g e t
   return (c, t)
 synth _ _ = undefined
@@ -250,19 +257,20 @@ synth _ _ = undefined
 check :: Context -> Term -> Type -> Gen Constraint
 check g (TLam x e) (TDepFn x0 s t)
   | x == x0 = do
-    c <- check (cxExtend g x s) e t
-    return $ cimp x s c
+      c <- check (tblSet x s g) e t
+      return $ cimp x s c
 check g (TLet x e1 e2) t2 = do
   (c1, t1) <- synth g e1
-  c2 <- check (cxExtend g x t1) e2 t2
+  c2 <- check (tblSet x t1 g) e2 t2
   return $ CAnd c1 (cimp x t1 c2)
 check g (TCond x e1 e2) t = do
   y <- gensym
   c1 <- check g e1 t <&> cimp y (TRBase BInt (trefine (PVar x)))
   c2 <- check g e2 t <&> cimp y (TRBase BInt (trefine (PNeg (PVar x))))
   return $ CAnd c1 c2
-check g (TRec x e1 t1 e2) t = do
-  let g1 = cxExtend g x t1
+check g (TRec x e1 s1 e2) t = do
+  t1 <- fresh g s1
+  let g1 = tblSet x t1 g
   c1 <- check g1 e1 t
   c2 <- check g1 e2 t
   return $ CAnd c1 c2
@@ -271,10 +279,23 @@ check g e t = do
   let c1 = sub s t
   return $ CAnd c c1
 
-
+-- Selfificaiton
 self :: Variable -> Type -> Type
 self x (TRBase b (RKnown v p)) = TRBase b (RKnown v (PAnd p (PInterpOp Equal (PVar v) (PVar x))))
 self _ t = t
+
+-- Templating
+fresh :: Context -> Type -> Gen Type
+fresh g (TRBase b Hole) = do
+  v <- gensym
+  k <- gensym
+  let freshKappa = HornVariable k b (bToList $ getRng g)
+  return $ TRBase b (RKnown v (PHornApp freshKappa (bToList $ getDom g)))
+fresh _ r@(TRBase _ (RKnown _ _)) = return r
+fresh g (TDepFn x s t) = do
+  s' <- fresh g s
+  t' <- fresh (tblSet x s' g) t
+  return $ TDepFn x s' t'
 
 -- Remove some tautologies from the output (closer matches the paper)
 cleanupConstraint :: Constraint -> Constraint
@@ -301,7 +322,7 @@ cleanupConstraint c = case clean c of
 ------ Tests
 
 testCheck :: Context -> Term -> Type -> Constraint
-testCheck gamma0 inc t0 = cleanupConstraint (evalState (check gamma0 inc t0) defaultState )
+testCheck gamma0 inc t0 = cleanupConstraint (evalState (check gamma0 inc t0) defaultState)
 
 subTest :: Constraint
 subTest = sub example36Sub example36Sup
@@ -326,7 +347,7 @@ nat = TRBase BInt (RKnown "n" (PInterpOp Leq (PInt 0) (PVar "n")))
 vcTest1 :: Constraint
 vcTest1 = testCheck gamma0 inc t0
   where
-    gamma0 = cxExtend (cxExtend cxEmpty "one" (TRBase BInt (RKnown "one" (PInterpOp Equal (PVar "one") (PInt 1))))) "x" nat
+    gamma0 = tblSet "x" nat (tblSet "one" (TRBase BInt (RKnown "one" (PInterpOp Equal (PVar "one") (PInt 1)))) (emptyTable Nothing))
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
 
@@ -335,11 +356,11 @@ vcTest2 = testCheck gamma1 term1 t0
   where
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
-    gamma1 = cxExtend cxEmpty "x" nat
+    gamma1 = tblSet "x" nat (emptyTable Nothing)
     term1 = TLet "one" (TConst (CNInt 1)) inc
 
 vcTest3 :: Constraint
-vcTest3 = testCheck cxEmpty term3 typ3
+vcTest3 = testCheck (emptyTable Nothing) term3 typ3
   where
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
     term1 = TLet "one" (TConst (CNInt 1)) inc

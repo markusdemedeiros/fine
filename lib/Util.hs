@@ -1,6 +1,6 @@
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Util where
 
@@ -25,6 +25,9 @@ data BSet a where
 
 bFromList :: Eq a => [a] -> BSet a
 bFromList = BSet . nub
+
+bToList :: BSet a -> [a]
+bToList (BSet l) = l
 
 bEmpty :: BSet a
 bEmpty = BSet []
@@ -92,6 +95,9 @@ instance (Show d, Show r) => Show (Table d r) where
 
 getDom :: Table d r -> BSet d
 getDom (Table d _ _) = d
+
+getRng :: Table d r -> BSet r
+getRng (Table d m _) = fmap m d
 
 getDef :: Table d r -> Maybe r
 getDef (Table _ _ d) = d
