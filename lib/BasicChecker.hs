@@ -1,4 +1,5 @@
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module BasicChecker where
 
@@ -6,6 +7,7 @@ import Control.Monad.State
 import Data.Functor ((<&>))
 import Data.List (intercalate)
 import Util
+import Control.Lens (makeLenses, (^.), (%~))
 
 -- Syntax for STLC with QF-UFLIA
 
@@ -52,6 +54,8 @@ data Term
   | TAnn Term Type
   | TCond Variable Term Term
   | TRec Variable Term Type Term
+  | TTAbs TypeVariable Kind Term
+  | TTApp Term BareType
   deriving (Eq)
 
 instance Show Term where
@@ -63,6 +67,7 @@ instance Show Term where
   show (TAnn term typ) = "(" ++ show term ++ ") : " ++ show typ
   show (TCond v tt tf) = "if (" ++ v ++ ") then (" ++ show tt ++ ") else (" ++ show tf ++ ")"
   show (TRec x e t e1) = "rec " ++ x ++ " = (" ++ show e ++ ") : " ++ show t ++ " in (" ++ show e1 ++ ")"
+  show (TTAbs tv k t) = "Lambda " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")" 
 
 data HornVariable
   = HornVariable Variable BasicType [Type]
@@ -115,11 +120,13 @@ instance Show Constraint where
 data BasicType
   = BInt
   | BBool
+  | BTVar TypeVariable
   deriving (Eq)
 
 instance Show BasicType where
   show BInt = "int"
   show BBool = "bool"
+  show (BTVar x) = x
 
 data Refinement
   = RKnown Binder Predicate
@@ -133,21 +140,36 @@ instance Show Refinement where
 data Type
   = TRBase BasicType Refinement
   | TDepFn Variable Type Type
+  | Forall TypeVariable Kind Type
   deriving (Eq)
 
 instance Show Type where
   show (TRBase b (RKnown _ (PBool True))) = show b
   show (TRBase b r) = show b ++ show r
   show (TDepFn v t s) = v ++ ":" ++ show t ++ " -> " ++ show s
+  show (Forall tv k t) = "forall " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
 
------- shorthand: implication constraints
-cimp :: Variable -> Type -> Constraint -> Constraint
-cimp x (TRBase b (RKnown v p)) c = CFun x b (subst p v (PVar x)) c
-cimp _ _ c = c
+
+data BareType
+  = BareTRBase BasicType -- interp. BasicType{*}
+  | BareTDepFn Variable BareType BareType
+  | BareForall TypeVariable Kind BareType
+  deriving (Eq)
+
+instance Show BareType where
+  show (BareTRBase b) = show b ++ "{*}"
+  show (BareTDepFn v t s) = v ++ ":" ++ show t ++ " -> " ++ show s
+  show (BareForall tv k t) = "forall " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
 
 ------ functional contexts
 
-type Context = Table Variable Type
+data Kind = BaseKind | StarKind deriving (Eq, Show)
+
+type TypeVariable = String
+
+data Context = Context {_terms :: Table Variable Type, _types :: Table TypeVariable Kind}
+
+makeLenses ''Context
 
 ------ abbreviations
 -- b        abbreviates   b{v: true}
@@ -179,13 +201,23 @@ oprim Sub = mkOprim Add
 mkOprim op =
   TDepFn "x" (base BInt) $
     TDepFn "y" (base BInt) $
-      TRBase BInt (RKnown "v" (PInterpOp Equal (PVar "v") (PInterpOp op (PVar "x") (PVar "y"))))
+      TRBase b (RKnown "v" (PInterpOp Equal (PVar "v") (PInterpOp op (PVar "x") (PVar "y"))))
+  where
+    b = case op of
+      Add -> BInt
+      Sub -> BInt
+      Leq -> BBool
+      Lt -> BBool
+      Geq -> BBool
+      Gt -> BBool
+      Equal -> BBool
 
 class Subst a where
   subst :: a -> Variable -> Predicate -> a
 
 instance Subst Predicate where
   -- TODO: There has to be a better way to do this
+  subst :: Predicate -> Variable -> Predicate -> Predicate
   subst p@(PVar v0) v1 p1
     | v0 == v1 = p1
     | otherwise = p
@@ -197,6 +229,14 @@ instance Subst Predicate where
   subst (PNeg p0) v p = PNeg (subst p0 v p)
   subst (PIf p0 p1 p2) v p = PIf (subst p0 v p) (subst p1 v p) (subst p2 v p)
   subst (PUninterpFun f p1) v p = PUninterpFun f (subst p v p1)
+
+
+------ shorthand: implication constraints
+cimp :: Variable -> Type -> Constraint -> Constraint
+cimp x (TRBase b (RKnown br p)) c = CFun x b (subst p v (PVar x)) c
+  where v :: Variable
+        v = br
+cimp _ _ c = c
 
 instance Subst Constraint where
   subst = undefined
@@ -238,7 +278,7 @@ gensym = do
 
 -- Algorithmic synthesis
 synth :: Context -> Term -> Gen (Constraint, Type)
-synth g (TVar x) = return (CPred $ PBool True, self x (getTbl g x))
+synth g (TVar x) = return (CPred $ PBool True, self x (getTbl (g ^. terms) x))
 -- chapter 3 version:
 -- return (CPred (PBool True), g x)
 synth _ (TConst c) = return (CPred $ PBool True, prim c)
@@ -257,11 +297,11 @@ synth _ _ = undefined
 check :: Context -> Term -> Type -> Gen Constraint
 check g (TLam x e) (TDepFn x0 s t)
   | x == x0 = do
-      c <- check (tblSet x s g) e t
+      c <- check (terms %~ (tblSet x s) $ g) e t
       return $ cimp x s c
 check g (TLet x e1 e2) t2 = do
   (c1, t1) <- synth g e1
-  c2 <- check (tblSet x t1 g) e2 t2
+  c2 <- check (terms %~  tblSet x t1 $ g) e2 t2
   return $ CAnd c1 (cimp x t1 c2)
 check g (TCond x e1 e2) t = do
   y <- gensym
@@ -270,7 +310,7 @@ check g (TCond x e1 e2) t = do
   return $ CAnd c1 c2
 check g (TRec x e1 s1 e2) t = do
   t1 <- fresh g s1
-  let g1 = tblSet x t1 g
+  let g1 = terms %~ tblSet x t1 $ g
   c1 <- check g1 e1 t
   c2 <- check g1 e2 t
   return $ CAnd c1 c2
@@ -289,12 +329,12 @@ fresh :: Context -> Type -> Gen Type
 fresh g (TRBase b Hole) = do
   v <- gensym
   k <- gensym
-  let freshKappa = HornVariable k b (bToList $ getRng g)
-  return $ TRBase b (RKnown v (PHornApp freshKappa (bToList $ getDom g)))
+  let freshKappa = HornVariable k b (bToList $ getRng (g ^. terms))
+  return $ TRBase b (RKnown v (PHornApp freshKappa (bToList $ getDom (g ^. terms))))
 fresh _ r@(TRBase _ (RKnown _ _)) = return r
 fresh g (TDepFn x s t) = do
   s' <- fresh g s
-  t' <- fresh (tblSet x s' g) t
+  t' <- fresh (terms %~ tblSet x s' $ g) t
   return $ TDepFn x s' t'
 
 -- Remove some tautologies from the output (closer matches the paper)
@@ -347,7 +387,10 @@ nat = TRBase BInt (RKnown "n" (PInterpOp Leq (PInt 0) (PVar "n")))
 vcTest1 :: Constraint
 vcTest1 = testCheck gamma0 inc t0
   where
-    gamma0 = tblSet "x" nat (tblSet "one" (TRBase BInt (RKnown "one" (PInterpOp Equal (PVar "one") (PInt 1)))) (emptyTable Nothing))
+    gamma0 = 
+        Context 
+        (tblSet "x" nat (tblSet "one" (TRBase BInt (RKnown "one" (PInterpOp Equal (PVar "one") (PInt 1)))) (emptyTable Nothing)))
+        (emptyTable Nothing)
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
 
@@ -356,14 +399,50 @@ vcTest2 = testCheck gamma1 term1 t0
   where
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
-    gamma1 = tblSet "x" nat (emptyTable Nothing)
+    gamma1 = Context (tblSet "x" nat (emptyTable Nothing)) (emptyTable Nothing)
     term1 = TLet "one" (TConst (CNInt 1)) inc
 
 vcTest3 :: Constraint
-vcTest3 = testCheck (emptyTable Nothing) term3 typ3
+vcTest3 = testCheck (Context (emptyTable Nothing) (emptyTable Nothing)) term3 typ3
   where
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
     term1 = TLet "one" (TConst (CNInt 1)) inc
     term3 = TLam "x" term1
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
     typ3 = TDepFn "x" nat t0
+
+-- Example from 4.3.1
+notTest :: Constraint
+notTest = testCheck tbl term typ
+  where
+    tbl = Context (tblSet "x" (base BBool) (emptyTable Nothing)) (emptyTable Nothing)
+    term = TCond "x" (TConst (CNBool True)) (TConst (CNBool False))
+    typ = TRBase BBool $ RKnown "b" (PInterpOp Equal (PVar "b") (PNeg (PVar "x")))
+
+-- Another example from 4.3.1
+
+sumTest :: Constraint
+sumTest = testCheck tbl term typ
+  where
+    ts =
+      TRBase BInt $
+        RKnown "v" $
+          PAnd
+            (PInterpOp Leq (PInt 0) (PVar "v"))
+            (PInterpOp Leq (PVar "n") (PVar "v"))
+    tbl =
+      Context 
+      (tblSet "n" (base BInt) $
+        tblSet "sum" (TDepFn "n" (base BInt) ts) $
+          emptyTable Nothing)
+      (emptyTable Nothing)
+    typ = ts
+    term =
+      TLet "c" todo $
+        TCond
+          "c"
+          (TConst (CNInt 0))
+          ( TLet "n1" todo $
+              TLet "n2" todo $
+                todo
+          )
