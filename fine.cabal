@@ -30,7 +30,9 @@ executable fine
                     Imp,
                     Util,
                     STLC,
-                    BasicChecker
+                    BasicChecker,
+                    Surface
+                  
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:

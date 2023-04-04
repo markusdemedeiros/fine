@@ -77,6 +77,7 @@ instance Show HornVariable where
   -- This is way too verbose
   -- show (HornVariable v b tys) = "kappa{" ++ v ++ "}@(" ++ show b ++ " | " ++ intercalate ", " (fmap show tys) ++ ")"
   show (HornVariable v b tys) = "kappa{" ++ v ++ "}"
+
 data Predicate
   = PVar Variable
   | PBool Bool
@@ -85,7 +86,7 @@ data Predicate
   | PAnd Predicate Predicate
   | POr Predicate Predicate
   | PNeg Predicate
-  | PIf Predicate Predicate Predicate
+  -- | PIf Predicate Predicate Predicate
   | PUninterpFun Variable Predicate -- ??
   | PHornApp HornVariable [Variable]
   deriving (Eq)
@@ -98,7 +99,7 @@ instance Show Predicate where
   show (PAnd p0 p1) = show p0 ++ " && " ++ show p1
   show (POr p0 p1) = show p0 ++ " || " ++ show p1
   show (PNeg p) = "!(" ++ show p ++ ")"
-  show (PIf pc pt pf) = "if " ++ show pc ++ " then " ++ show pt ++ " else " ++ show pf
+  -- show (PIf pc pt pf) = "if " ++ show pc ++ " then " ++ show pt ++ " else " ++ show pf
   show (PUninterpFun v p) = v ++ "(" ++ show p ++ ")"
   show (PHornApp h vs) = show h ++ "(" ++ intercalate ", " vs ++ ")"
 
@@ -222,7 +223,7 @@ instance Subst Predicate where
   subst (PAnd p0 p1) v p = PAnd (subst p0 v p) (subst p1 v p)
   subst (POr p0 p1) v p = POr (subst p0 v p) (subst p1 v p)
   subst (PNeg p0) v p = PNeg (subst p0 v p)
-  subst (PIf p0 p1 p2) v p = PIf (subst p0 v p) (subst p1 v p) (subst p2 v p)
+  -- subst (PIf p0 p1 p2) v p = PIf (subst p0 v p) (subst p1 v p) (subst p2 v p)
   subst (PUninterpFun f p1) v p = PUninterpFun f (subst p v p1)
 
 
@@ -378,7 +379,7 @@ testCheck :: Context -> Term -> Type -> Constraint
 testCheck gamma0 inc t0 = cleanupConstraint (evalState (check gamma0 inc t0) defaultState)
 
 testSynth :: Context -> Term -> (Constraint, Type)
-testSynth gamma0 t0 = let (cs, ty) = (evalState (synth gamma0 t0) defaultState) in (cleanupConstraint cs, ty)
+testSynth gamma0 t0 = let (cs, ty) = evalState (synth gamma0 t0) defaultState in (cleanupConstraint cs, ty)
 
 setupContext :: [(Variable, Type)] -> [(TypeVariable, Kind)] -> Context
 setupContext vBs aBs = g2
@@ -479,7 +480,7 @@ clientTest = testSynth g e0
       [ ("v_zero", prim (CNInt 0))
       , ("v_five", prim (CNInt 5))
       , ("v_one", prim (CNInt 1))
-      , ("max", TForall "alpha" StarKind (TDepFn "bv0" (base (BTVar "alpha")) (TDepFn "bv1" (base (BTVar "alpha")) (base (BTVar "alpha"))) ))
+      , ("max", TForall "alpha" BaseKind (TDepFn "bv0" (base (BTVar "alpha")) (TDepFn "bv1" (base (BTVar "alpha")) (base (BTVar "alpha"))) ))
       , ("add" , TDepFn "x" (base BInt) (TRBase BInt (RKnown "y" (PInterpOp Equal (PVar "y") (PInterpOp Add (PVar "x") (PInt 1))))))]
       []
     client 
