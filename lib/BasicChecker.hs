@@ -140,26 +140,20 @@ instance Show Refinement where
 data Type
   = TRBase BasicType Refinement
   | TDepFn Variable Type Type
-  | Forall TypeVariable Kind Type
+  | TForall TypeVariable Kind Type
   deriving (Eq)
 
 instance Show Type where
   show (TRBase b (RKnown _ (PBool True))) = show b
   show (TRBase b r) = show b ++ show r
   show (TDepFn v t s) = v ++ ":" ++ show t ++ " -> " ++ show s
-  show (Forall tv k t) = "forall " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
+  show (TForall tv k t) = "forall " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
 
 
-data BareType
-  = BareTRBase BasicType -- interp. BasicType{*}
-  | BareTDepFn Variable BareType BareType
-  | BareForall TypeVariable Kind BareType
-  deriving (Eq)
+-- BareTypes are a subtype of Types, where base variables are all refined with holes. 
+-- We do not need to distinguish between these cases in the code. 
+type BareType = Type
 
-instance Show BareType where
-  show (BareTRBase b) = show b ++ "{*}"
-  show (BareTDepFn v t s) = v ++ ":" ++ show t ++ " -> " ++ show s
-  show (BareForall tv k t) = "forall " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
 
 ------ functional contexts
 
@@ -249,8 +243,19 @@ instance Subst Type where
     | x == y = TDepFn x (subst s x z) t
     | otherwise = TDepFn x (subst s y z) (subst t y z)
 
+substTyVar :: TypeVariable -> Type -> Type -> Type
+substTyVar aFrom tTo (TRBase (BTVar alpha) r) 
+  | alpha == aFrom = tTo
+  | otherwise = TRBase (BTVar alpha) r
+substTyVar aFrom tTo (TDepFn v t1 t2) = TDepFn v (substTyVar aFrom tTo t1) (substTyVar aFrom tTo t2)
+substTyVar aFrom tTo (TForall tv k t) 
+  | tv == aFrom = TForall tv k t
+  | otherwise = TForall tv k (substTyVar aFrom tTo t)
+
 -- Algorithmic subtyping
 sub :: Type -> Type -> Constraint
+sub (TForall alpha1 k1 t1) (TForall alpha2 k2 t2)
+  |  k1 == k2 = sub t1 (substTyVar alpha2 (base (BTVar alpha1)) t2)
 sub (TRBase b0 (RKnown v1 p1)) (TRBase b1 (RKnown v2 p2))
   | b0 == b1 = CFun v1 b0 p1 (CPred (subst p2 v2 (PVar v1)))
 sub (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) =
@@ -278,6 +283,11 @@ gensym = do
 
 -- Algorithmic synthesis
 synth :: Context -> Term -> Gen (Constraint, Type)
+synth g (TTApp e tau) = do
+  t <- fresh g tau
+  syn_e <- synth g e
+  let (c, TForall alpha k s) = syn_e
+  return (c, substTyVar alpha t s)
 synth g (TVar x) = return (CPred $ PBool True, self x (getTbl (g ^. terms) x))
 -- chapter 3 version:
 -- return (CPred (PBool True), g x)
@@ -295,9 +305,11 @@ synth _ _ = undefined
 
 -- Algorithmic checking
 check :: Context -> Term -> Type -> Gen Constraint
+check g (TTAbs alpha k e) (TForall a1 k1 t)
+  | (k == k1) && (alpha == a1) = check (types %~ tblSet alpha k $ g) e t
 check g (TLam x e) (TDepFn x0 s t)
   | x == x0 = do
-      c <- check (terms %~ (tblSet x s) $ g) e t
+      c <- check (terms %~ tblSet x s $ g) e t
       return $ cimp x s c
 check g (TLet x e1 e2) t2 = do
   (c1, t1) <- synth g e1
