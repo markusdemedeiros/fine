@@ -74,8 +74,9 @@ data HornVariable
   deriving (Eq)
 
 instance Show HornVariable where
-  show (HornVariable v b tys) = "kappa{" ++ v ++ "}@(" ++ show b ++ " | " ++ intercalate ", " (fmap show tys) ++ ")"
-
+  -- This is way too verbose
+  -- show (HornVariable v b tys) = "kappa{" ++ v ++ "}@(" ++ show b ++ " | " ++ intercalate ", " (fmap show tys) ++ ")"
+  show (HornVariable v b tys) = "kappa{" ++ v ++ "}"
 data Predicate
   = PVar Variable
   | PBool Bool
@@ -376,6 +377,16 @@ cleanupConstraint c = case clean c of
 testCheck :: Context -> Term -> Type -> Constraint
 testCheck gamma0 inc t0 = cleanupConstraint (evalState (check gamma0 inc t0) defaultState)
 
+testSynth :: Context -> Term -> (Constraint, Type)
+testSynth gamma0 t0 = let (cs, ty) = (evalState (synth gamma0 t0) defaultState) in (cleanupConstraint cs, ty)
+
+setupContext :: [(Variable, Type)] -> [(TypeVariable, Kind)] -> Context
+setupContext vBs aBs = g2
+  where 
+    g0 = Context (emptyTable Nothing) (emptyTable Nothing)
+    g1 = foldl (\g (v, t) -> terms %~ tblSet v t $ g) g0 vBs
+    g2 = foldl (\g (v, t) -> types %~ tblSet v t $ g) g1 aBs
+
 subTest :: Constraint
 subTest = sub example36Sub example36Sup
   where
@@ -458,3 +469,22 @@ sumTest = testCheck tbl term typ
               TLet "n2" todo $
                 todo
           )
+
+
+clientTest = testSynth g e0
+  -- testSynth g (TVar "max")
+  -- testCheck tbl client typ
+  where
+    g = setupContext 
+      [ ("v_zero", prim (CNInt 0))
+      , ("v_five", prim (CNInt 5))
+      , ("v_one", prim (CNInt 1))
+      , ("max", TForall "alpha" StarKind (TDepFn "bv0" (base (BTVar "alpha")) (TDepFn "bv1" (base (BTVar "alpha")) (base (BTVar "alpha"))) ))
+      , ("add" , TDepFn "x" (base BInt) (TRBase BInt (RKnown "y" (PInterpOp Equal (PVar "y") (PInterpOp Add (PVar "x") (PInt 1))))))]
+      []
+    client 
+      = TLet "r" (TApp (TApp (TVar "max") "v_zero") "v_five")
+        $ TApp (TApp (TVar "add") "r") "v_one"
+    e0 = TTApp (TVar "max") (TRBase BInt Hole)
+    typ = todo
+
