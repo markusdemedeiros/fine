@@ -3,13 +3,17 @@
 
 module BasicChecker where
 
+import Control.Lens (makeLenses, (%~), (^.))
 import Control.Monad.State
 import Data.Functor ((<&>))
 import Data.List (intercalate)
 import Util
-import Control.Lens (makeLenses, (^.), (%~))
 
 -- Syntax for STLC with QF-UFLIA
+
+type FnName = String
+
+data Program = Program {_decls :: Table FnName Type, _bodies :: Table FnName Term}
 
 data Constant
   = CNOp InterpOp
@@ -67,7 +71,7 @@ instance Show Term where
   show (TAnn term typ) = "(" ++ show term ++ ") : " ++ show typ
   show (TCond v tt tf) = "if (" ++ v ++ ") then (" ++ show tt ++ ") else (" ++ show tf ++ ")"
   show (TRec x e t e1) = "rec " ++ x ++ " = (" ++ show e ++ ") : " ++ show t ++ " in (" ++ show e1 ++ ")"
-  show (TTAbs tv k t) = "Lambda " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")" 
+  show (TTAbs tv k t) = "Lambda " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
 
 data HornVariable
   = HornVariable Variable BasicType [Type]
@@ -86,8 +90,8 @@ data Predicate
   | PAnd Predicate Predicate
   | POr Predicate Predicate
   | PNeg Predicate
-  -- | PIf Predicate Predicate Predicate
-  | PUninterpFun Variable Predicate -- ??
+  | -- | PIf Predicate Predicate Predicate
+    PUninterpFun Variable Predicate -- ??
   | PHornApp HornVariable [Variable]
   deriving (Eq)
 
@@ -151,11 +155,9 @@ instance Show Type where
   show (TDepFn v t s) = v ++ ":" ++ show t ++ " -> " ++ show s
   show (TForall tv k t) = "forall " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
 
-
--- BareTypes are a subtype of Types, where base variables are all refined with holes. 
--- We do not need to distinguish between these cases in the code. 
+-- BareTypes are a subtype of Types, where base variables are all refined with holes.
+-- We do not need to distinguish between these cases in the code.
 type BareType = Type
-
 
 ------ functional contexts
 
@@ -165,7 +167,9 @@ type TypeVariable = String
 
 data Context = Context {_terms :: Table Variable Type, _types :: Table TypeVariable Kind}
 
+-- Datatype lenses
 makeLenses ''Context
+makeLenses ''Program
 
 ------ abbreviations
 -- b        abbreviates   b{v: true}
@@ -226,12 +230,12 @@ instance Subst Predicate where
   -- subst (PIf p0 p1 p2) v p = PIf (subst p0 v p) (subst p1 v p) (subst p2 v p)
   subst (PUninterpFun f p1) v p = PUninterpFun f (subst p v p1)
 
-
 ------ shorthand: implication constraints
 cimp :: Variable -> Type -> Constraint -> Constraint
 cimp x (TRBase b (RKnown br p)) c = CFun x b (subst p v (PVar x)) c
-  where v :: Variable
-        v = br
+  where
+    v :: Variable
+    v = br
 cimp _ _ c = c
 
 instance Subst Constraint where
@@ -246,18 +250,18 @@ instance Subst Type where
     | otherwise = TDepFn x (subst s y z) (subst t y z)
 
 substTyVar :: TypeVariable -> Type -> Type -> Type
-substTyVar aFrom tTo (TRBase (BTVar alpha) r) 
+substTyVar aFrom tTo (TRBase (BTVar alpha) r)
   | alpha == aFrom = tTo
   | otherwise = TRBase (BTVar alpha) r
 substTyVar aFrom tTo (TDepFn v t1 t2) = TDepFn v (substTyVar aFrom tTo t1) (substTyVar aFrom tTo t2)
-substTyVar aFrom tTo (TForall tv k t) 
+substTyVar aFrom tTo (TForall tv k t)
   | tv == aFrom = TForall tv k t
   | otherwise = TForall tv k (substTyVar aFrom tTo t)
 
 -- Algorithmic subtyping
 sub :: Type -> Type -> Constraint
 sub (TForall alpha1 k1 t1) (TForall alpha2 k2 t2)
-  |  k1 == k2 = sub t1 (substTyVar alpha2 (base (BTVar alpha1)) t2)
+  | k1 == k2 = sub t1 (substTyVar alpha2 (base (BTVar alpha1)) t2)
 sub (TRBase b0 (RKnown v1 p1)) (TRBase b1 (RKnown v2 p2))
   | b0 == b1 = CFun v1 b0 p1 (CPred (subst p2 v2 (PVar v1)))
 sub (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) =
@@ -315,7 +319,7 @@ check g (TLam x e) (TDepFn x0 s t)
       return $ cimp x s c
 check g (TLet x e1 e2) t2 = do
   (c1, t1) <- synth g e1
-  c2 <- check (terms %~  tblSet x t1 $ g) e2 t2
+  c2 <- check (terms %~ tblSet x t1 $ g) e2 t2
   return $ CAnd c1 (cimp x t1 c2)
 check g (TCond x e1 e2) t = do
   y <- gensym
@@ -383,7 +387,7 @@ testSynth gamma0 t0 = let (cs, ty) = evalState (synth gamma0 t0) defaultState in
 
 setupContext :: [(Variable, Type)] -> [(TypeVariable, Kind)] -> Context
 setupContext vBs aBs = g2
-  where 
+  where
     g0 = Context (emptyTable Nothing) (emptyTable Nothing)
     g1 = foldl (\g (v, t) -> terms %~ tblSet v t $ g) g0 vBs
     g2 = foldl (\g (v, t) -> types %~ tblSet v t $ g) g1 aBs
@@ -411,8 +415,8 @@ nat = TRBase BInt (RKnown "n" (PInterpOp Leq (PInt 0) (PVar "n")))
 vcTest1 :: Constraint
 vcTest1 = testCheck gamma0 inc t0
   where
-    gamma0 = 
-        Context 
+    gamma0 =
+      Context
         (tblSet "x" nat (tblSet "one" (TRBase BInt (RKnown "one" (PInterpOp Equal (PVar "one") (PInt 1)))) (emptyTable Nothing)))
         (emptyTable Nothing)
     t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
@@ -455,11 +459,12 @@ sumTest = testCheck tbl term typ
             (PInterpOp Leq (PInt 0) (PVar "v"))
             (PInterpOp Leq (PVar "n") (PVar "v"))
     tbl =
-      Context 
-      (tblSet "n" (base BInt) $
-        tblSet "sum" (TDepFn "n" (base BInt) ts) $
-          emptyTable Nothing)
-      (emptyTable Nothing)
+      Context
+        ( tblSet "n" (base BInt) $
+            tblSet "sum" (TDepFn "n" (base BInt) ts) $
+              emptyTable Nothing
+        )
+        (emptyTable Nothing)
     typ = ts
     term =
       TLet "c" todo $
@@ -471,21 +476,22 @@ sumTest = testCheck tbl term typ
                 todo
           )
 
-
 clientTest = testSynth g e0
-  -- testSynth g (TVar "max")
-  -- testCheck tbl client typ
   where
-    g = setupContext 
-      [ ("v_zero", prim (CNInt 0))
-      , ("v_five", prim (CNInt 5))
-      , ("v_one", prim (CNInt 1))
-      , ("max", TForall "alpha" BaseKind (TDepFn "bv0" (base (BTVar "alpha")) (TDepFn "bv1" (base (BTVar "alpha")) (base (BTVar "alpha"))) ))
-      , ("add" , TDepFn "x" (base BInt) (TRBase BInt (RKnown "y" (PInterpOp Equal (PVar "y") (PInterpOp Add (PVar "x") (PInt 1))))))]
-      []
-    client 
-      = TLet "r" (TApp (TApp (TVar "max") "v_zero") "v_five")
-        $ TApp (TApp (TVar "add") "r") "v_one"
+    -- testSynth g (TVar "max")
+    -- testCheck tbl client typ
+
+    g =
+      setupContext
+        [ ("v_zero", prim (CNInt 0)),
+          ("v_five", prim (CNInt 5)),
+          ("v_one", prim (CNInt 1)),
+          ("max", TForall "alpha" BaseKind (TDepFn "bv0" (base (BTVar "alpha")) (TDepFn "bv1" (base (BTVar "alpha")) (base (BTVar "alpha"))))),
+          ("add", TDepFn "x" (base BInt) (TRBase BInt (RKnown "y" (PInterpOp Equal (PVar "y") (PInterpOp Add (PVar "x") (PInt 1))))))
+        ]
+        []
+    client =
+      TLet "r" (TApp (TApp (TVar "max") "v_zero") "v_five") $
+        TApp (TApp (TVar "add") "r") "v_one"
     e0 = TTApp (TVar "max") (TRBase BInt Hole)
     typ = todo
-
