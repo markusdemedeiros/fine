@@ -15,6 +15,9 @@ type FnName = String
 
 data Program = Program {_decls :: Table FnName Type, _bodies :: Table FnName Term}
 
+emptyProgram :: Program
+emptyProgram = Program (emptyTable Nothing) (emptyTable Nothing)
+
 data Constant
   = CNOp InterpOp
   | CNInt Int

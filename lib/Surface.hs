@@ -4,9 +4,11 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
+{-# HLINT ignore "Redundant bracket" #-}
+
 module Surface where
 
-import BasicChecker (BasicType (..), Constant (..), FnName, InterpOp (..), Predicate (..), Program, Refinement (RKnown), Term (..), Type (..), Variable, bodies, decls)
+import BasicChecker (BasicType (..), Constant (..), FnName, InterpOp (..), Predicate (..), Program, Refinement (RKnown), Term (..), Type (..), Variable, bodies, decls, emptyProgram)
 import Control.Lens (makeLenses, (%~), (^.))
 import qualified Control.Monad.State as ST
 import Util
@@ -24,7 +26,7 @@ type ParseState = ST.State Program
 
 -- possibly check the validity of names here
 parse :: ParseState a -> Program
-parse s = snd $ ST.runState s (error "syntax error: body _main_ is not set")
+parse s = snd $ ST.runState s emptyProgram
 
 -- fixme: remove naming ambiguity in the surface syntax
 type TyVarName = String
@@ -51,10 +53,10 @@ _main = return
 
 -- | Type position
 bool :: Type
-bool = TRBase BInt (RKnown "unused" (PBool True))
+bool = TRBase BBool (RKnown "unused" (PBool True))
 
 int :: Type
-int = TRBase BBool (RKnown "unused" (PBool True))
+int = TRBase BInt (RKnown "unused" (PBool True))
 
 tyv :: TyVarName -> Type
 tyv v = TRBase (BTVar v) (RKnown "unused" (PBool True))
@@ -101,6 +103,12 @@ integer = TConst . CNInt
 
 bind :: Variable -> Term -> Term -> Term
 bind = TLet
+
+lam :: Variable -> Term -> Term
+lam = TLam
+
+app :: Term -> Variable -> Term
+app = TApp
 
 letrec :: Variable -> Term -> Type -> Term -> Term
 letrec = TRec
@@ -161,3 +169,18 @@ prog1 = parse $ do
 --   cond "c"
 --     todo
 --     todo
+
+prog2 :: Program
+prog2 = parse $ do
+  _val "or" $ refn "x" bool (refn "y" bool (refine bool "b" (eq' (var' "b") (or' (var' "x") (var' "y")))))
+  _let "or" ["x", "y"] $
+    cond
+      "x"
+      true
+      (var "y")
+
+prog3 :: Program
+prog3 = parse $ do
+  _val "v" $ refine int "z" (eq' (var' "z") (int' 4))
+  _let "main" [] $
+    app (lam "x" (var "x")) "id"

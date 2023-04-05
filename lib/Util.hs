@@ -89,7 +89,7 @@ instance Functor (Table d) where
 
 instance (Show d, Show r) => Show (Table d r) where
   show t@(Table dom fun def) =
-    "[ " ++ (drop 2 . reverse . drop 1 . reverse) (concatMap (\x -> "  (" ++ show x ++ " -> " ++ show (fun x) ++ ")\n\t\t ") dom ++ ds) ++ "]"
+    "[ " ++ (drop 2 . reverse . drop 1 . reverse) (concatMap (\x -> "  (" ++ show x ++ " -> " ++ show (fun x) ++ ")\n") dom ++ ds) ++ "]"
     where
       ds = case def of
         Nothing -> ""
@@ -134,6 +134,6 @@ instance (Eq d, Eq r, Show d) => Eq (Table d r) where
     where
       -- trace ("[tbl ==] " ++ show deq ++ " " ++ show veq ++ " " ++ show defeq) $ deq && veq -- && defeq
 
-      deq = (dom0 == dom1)
+      deq = dom0 == dom1
       veq = all (\s -> fun0 s == fun1 s) dom0
-      defeq = (def0 == def1)
+      defeq = def0 == def1

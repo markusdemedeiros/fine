@@ -106,7 +106,7 @@ synTerm a name term = do
     --    No new constraints in either case.
     j g (TVar v)
       | bContains v (g ^. dom) = return (getTbl g v, [])
-      | otherwise = return (declType a name, [])
+      | otherwise = return (declType a v, [])
     -- Let bindings:
     --  For now, we're going to do this the same as lambda. No let-polymorphism.
     j g (TLet x bound body) = do
@@ -128,6 +128,11 @@ synTerm a name term = do
     j g (TAnn t typ) = do
       (tau, cs) <- j g t
       return (eraseRefinements typ, (eraseRefinements typ, tau) : cs)
+    j g (TApp e varg) = do
+      (tauFunction, cf) <- j g e
+      tauArg <- j g (TVar varg) <&> fst
+      tauResult <- gensym <&> UnifVar
+      return (tauResult, (UnifFn tauArg tauResult, tauFunction) : cf)
 
     -- Conditionals:
     --  Get the types of all three subterms
@@ -158,6 +163,21 @@ constrain p = declConstraints ++ bodyConstraints
     arity = collectArity p
     declConstraints = concatMap (\nm -> synDecl arity nm (getTbl (p ^. decls) nm)) (p ^. (decls . dom))
     bodyConstraints = fst . flip ST.runState 0 $ foldM (\c0 nm -> synTerm arity nm (getTbl (p ^. bodies) nm) <&> (++ c0)) [] (p ^. (bodies . dom))
+
+-- Helpful for debugging
+showConstraints :: Program -> IO ()
+showConstraints p = mapM_ (putStrLn . pretty) (constrain p)
+  where
+    pretty :: UnifConstraint -> String
+    pretty (c0, c1) = pretty' c0 ++ " = " ++ pretty' c1 ++ ";"
+    pretty' (UnifVar uv) = pretty'' uv
+    pretty' (UnifFn (UnifVar uv) tr) = pretty'' uv ++ " -> " ++ pretty' tr
+    pretty' (UnifFn ta tr) = pretty' ta ++ " -> " ++ pretty' tr
+
+    pretty'' (UnifAtom b) = show b
+    pretty'' (Anon i) = "tmp." ++ show i
+    pretty'' (FnArg name i) = name ++ ".arg." ++ show i
+    pretty'' (FnVal name) = name ++ ".val"
 
 infer :: Program -> Program
 infer = todo
