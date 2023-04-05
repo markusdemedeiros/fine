@@ -78,6 +78,8 @@ class Finite a where
 
 data Table d r = Table {_dom :: BSet d, _map :: d -> r, _def :: Maybe r}
 
+makeLenses ''Table
+
 -- def is a an option this table returns
 -- if def is not None, all out of scope
 

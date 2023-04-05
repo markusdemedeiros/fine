@@ -72,6 +72,7 @@ instance Show Term where
   show (TCond v tt tf) = "if (" ++ v ++ ") then (" ++ show tt ++ ") else (" ++ show tf ++ ")"
   show (TRec x e t e1) = "rec " ++ x ++ " = (" ++ show e ++ ") : " ++ show t ++ " in (" ++ show e1 ++ ")"
   show (TTAbs tv k t) = "Lambda " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
+  show (TTApp t bt) = "(" ++ show t ++ ")[" ++ show bt ++ "]"
 
 data HornVariable
   = HornVariable Variable BasicType [Type]
