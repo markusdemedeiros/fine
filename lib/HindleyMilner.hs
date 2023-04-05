@@ -3,8 +3,9 @@
 {-# HLINT ignore "Use record patterns" #-}
 module HindleyMilner where
 
-import BasicChecker (BasicType (..), FnName, Program, Term (..), Type (..), Variable, decls, prim)
+import BasicChecker (BasicType (..), FnName, Program, Term (..), Type (..), Variable, bodies, decls, prim)
 import Control.Lens (over, (%~), (^.))
+import Control.Monad
 import qualified Control.Monad.State as ST
 import Data.Functor ((<&>))
 import Util
@@ -88,7 +89,9 @@ type Gamma = Table Variable UnifType
 -- Get constraints for a single body
 -- Synthesize the entire most general type, and constrain it to be equal to (declType)
 synTerm :: Arity -> FnName -> Term -> ConstraintST [UnifConstraint]
-synTerm a name = todo
+synTerm a name term = do
+  (tau, cs) <- j (emptyTable Nothing) term
+  return $ (declType a name, tau) : cs
   where
     -- Extends Algorithm J
     -- Does not implement let-polymorphism
@@ -146,10 +149,15 @@ synTerm a name = todo
 
 -- Get constraints for a single function declaration
 synDecl :: Arity -> FnName -> Type -> [UnifConstraint]
-synDecl a name typ = gen (eraseRefinements typ) (declType a name)
+synDecl a name typ = [(eraseRefinements typ, declType a name)]
+
+-- Get all of the type inference constraints for a program
+constrain :: Program -> [UnifConstraint]
+constrain p = declConstraints ++ bodyConstraints
   where
-    gen :: UnifType -> UnifType -> [UnifConstraint]
-    gen = todo
+    arity = collectArity p
+    declConstraints = concatMap (\nm -> synDecl arity nm (getTbl (p ^. decls) nm)) (p ^. (decls . dom))
+    bodyConstraints = fst . flip ST.runState 0 $ foldM (\c0 nm -> synTerm arity nm (getTbl (p ^. bodies) nm) <&> (++ c0)) [] (p ^. (bodies . dom))
 
 infer :: Program -> Program
 infer = todo
