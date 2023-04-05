@@ -179,5 +179,30 @@ showConstraints p = mapM_ (putStrLn . pretty) (constrain p)
     pretty'' (FnArg name i) = name ++ ".arg." ++ show i
     pretty'' (FnVal name) = name ++ ".val"
 
+data SubstR
+  = Self
+  | Link Variable
+  | Type UnifType
+
+-- Subst should look up to be either a UnifType
+type Subst = Table Variable SubstR
+
+unify :: [UnifConstraint] -> Subst
+unify = unify' (emptyTable $ Just Self)
+  where
+    unify' tb [] = tb
+    unify' tb (c : cs) =
+      case c of
+        (_, _) -> error "cannot unify!"
+
+-- Rewrite the program to
+--  0. Add extra annotations for the functions without type signautures
+--  1. Add explicit forall's to all function signatures
+--  2. Apply the subtitutions to all type signatures and bodies
+--  2.1. Add explicit term-level type abstraction at the start of functiona
+--  2.2. Add explicit term-level type applications at call sites (with holes)
+rewrite :: Program -> Arity -> Subst -> Program
+rewrite = todo
+
 infer :: Program -> Program
 infer = todo
