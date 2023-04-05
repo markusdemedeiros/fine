@@ -1,7 +1,12 @@
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Use record patterns" #-}
 module HindleyMilner where
 
-import BasicChecker (BasicType, FnName, Program, Term, Type (..), decls)
+import BasicChecker (BasicType (..), FnName, Program, Term (..), Type (..), Variable, decls, prim)
 import Control.Lens (over, (%~), (^.))
+import qualified Control.Monad.State as ST
+import Data.Functor ((<&>))
 import Util
 
 -- Type checking strategy: (remember-- we ignore all refinements until we insert holes @ call sites!)
@@ -35,6 +40,7 @@ data UnifType
   deriving (Show, Eq)
 
 -- Equality constraints between unification types.
+-- The convention is that the type on the left is preferred to the type on the right.
 type UnifConstraint = (UnifType, UnifType)
 
 -- Number of arguments for all interp. and uninterp. functions.
@@ -45,13 +51,22 @@ type UnifConstraint = (UnifType, UnifType)
 -- For functions with no declared type, their arity is at least 1. Unification will find the precise number.
 type Arity = Table FnName Int
 
+-- Global State for creating fresh variables across the program
+type ConstraintST = ST.State Int
+
+gensym :: ConstraintST UnifVar
+gensym = do
+  r <- ST.get
+  ST.put (r + 1)
+  return $ Anon r
+
 collectArity :: Program -> Arity
 collectArity p = def %~ const (Just 1) $ typeArity <$> (p ^. decls)
   where
     typeArity :: Type -> Int
     typeArity (TRBase {}) = 1
     typeArity (TDepFn _ _ t) = 1 + typeArity t
-    typeArity (TForall {}) = error "illegal type quantifier"
+    typeArity (TForall {}) = error "illegal type quantifier in typeArity"
 
 -- Get the type associated to a named function
 declType :: Arity -> FnName -> UnifType
@@ -62,13 +77,79 @@ declType arity name = mkty 0 (getTbl arity name)
       | (a + 1) == n = UnifVar $ FnVal name
       | (a + 1) < n = UnifFn (UnifVar (FnArg name a)) $ mkty (a + 1) n
 
+-- Convert a type into its base form
+eraseRefinements :: Type -> UnifType
+eraseRefinements (TRBase b _) = UnifVar $ UnifAtom b
+eraseRefinements (TDepFn _ t1 t2) = UnifFn (eraseRefinements t1) (eraseRefinements t2)
+eraseRefinements (TForall _ _ _) = error "illegal type quantifier in erase refinements"
+
+type Gamma = Table Variable UnifType
+
 -- Get constraints for a single body
-synTerm :: Arity -> Term -> [UnifConstraint]
-synTerm = todo
+-- Synthesize the entire most general type, and constrain it to be equal to (declType)
+synTerm :: Arity -> FnName -> Term -> ConstraintST [UnifConstraint]
+synTerm a name = todo
+  where
+    -- Extends Algorithm J
+    -- Does not implement let-polymorphism
+    -- https://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system
+    j :: Gamma -> Term -> ConstraintST (UnifType, [UnifConstraint])
+
+    -- Constants: Match base type of primitve type
+    j g (TConst k) = return (eraseRefinements $ prim k, [])
+    -- Variables:
+    --    If v is free, return the declType.
+    --    If v is bound, lookup the type in the context.
+    --    No new constraints in either case.
+    j g (TVar v)
+      | bContains v (g ^. dom) = return (getTbl g v, [])
+      | otherwise = return (declType a name, [])
+    -- Let bindings:
+    --  For now, we're going to do this the same as lambda. No let-polymorphism.
+    j g (TLet x bound body) = do
+      (te, ce) <- j g bound
+      (tb, cb) <- j (tblSet x te g) body
+      return (tb, ce ++ cb)
+    -- Lambda bindings:
+    --  Allocate fresh unification variable tau
+    --  Set x to tau in g, check the body to get tau'
+    --  Result is tau->tau'; no new bindings.
+    j g (TLam x body) = do
+      tau <- gensym <&> UnifVar
+      (tau', cs) <- j (tblSet x tau g) body
+      return (UnifFn tau tau', cs)
+    -- Annotations:
+    --  Get the type of the inner term
+    --  Constrain that type to the annotation
+    --  Return the preferred type (the annotation)
+    j g (TAnn t typ) = do
+      (tau, cs) <- j g t
+      return (eraseRefinements typ, (eraseRefinements typ, tau) : cs)
+
+    -- Conditionals:
+    --  Get the types of all three subterms
+    --  Constrain the predicate type to be a boolean
+    --  Contrain the tt and tf types to be equal (prefer tt)
+    j g (TCond vc tt tf) = do
+      -- It is sound to treat vc as if it was a variable term here.
+      (tauc, cc) <- j g (TVar vc)
+      (taut, ct) <- j g tt
+      (tauf, cf) <- j g tf
+      let condPred = (tauc, UnifVar . UnifAtom $ BBool)
+      let branchPred = (taut, tauf)
+      return (taut, condPred : branchPred : (cc ++ ct ++ cf))
+
+    -- Letrec:
+    --  TODO
+    j g (TRec v bound ty body) = do todo
+    j _ _ = error "unhandled case in algorithm j"
 
 -- Get constraints for a single function declaration
-synDecl :: Arity -> Term -> [UnifConstraint]
-synDecl = todo
+synDecl :: Arity -> FnName -> Type -> [UnifConstraint]
+synDecl a name typ = gen (eraseRefinements typ) (declType a name)
+  where
+    gen :: UnifType -> UnifType -> [UnifConstraint]
+    gen = todo
 
 infer :: Program -> Program
 infer = todo
