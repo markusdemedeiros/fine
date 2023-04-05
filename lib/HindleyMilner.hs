@@ -4,10 +4,11 @@
 module HindleyMilner where
 
 import BasicChecker (BasicType (..), FnName, Program, Term (..), Type (..), Variable, bodies, decls, prim)
-import Control.Lens (over, (%~), (^.))
+import Control.Lens (Bifunctor (bimap), over, (%~), (^.))
 import Control.Monad
 import qualified Control.Monad.State as ST
 import Data.Functor ((<&>))
+import GHC.Generics (UInt)
 import Util
 
 -- Type checking strategy: (remember-- we ignore all refinements until we insert holes @ call sites!)
@@ -179,21 +180,117 @@ showConstraints p = mapM_ (putStrLn . pretty) (constrain p)
     pretty'' (FnArg name i) = name ++ ".arg." ++ show i
     pretty'' (FnVal name) = name ++ ".val"
 
+-- Indeterminate types, must be mapped from.
+data UVar
+  = UAnon Int
+  | UFnAg FnName Int
+  | UFnR FnName
+  | UserVar String
+  deriving (Show, Eq)
+
+-- Grounded types.
+data UConcrete
+  = UBool
+  | UInt
+  deriving (Show, Eq)
+
+-- Trees of types.
+data UTy
+  = UConc UConcrete
+  | UVar UVar
+  | UFn UTy UTy
+  deriving (Show, Eq)
+
+-- Turn the system of generated constraints into one which treats variables uniformly
+-- This could probably be inlined into constraint generation lol
+preprocessVariables :: [UnifConstraint] -> [(UTy, UTy)]
+preprocessVariables = fmap (bimap p' p')
+
+-- Helper function: Turns a UnifType constraint into a form that treats variables uniformly.
+p' :: UnifType -> UTy
+p' (UnifFn a b) = UFn (p' a) (p' b)
+p' (UnifVar (UnifAtom BInt)) = UConc UBool
+p' (UnifVar (UnifAtom BBool)) = UConc UInt
+p' (UnifVar (UnifAtom (BTVar v))) = UVar (UserVar v)
+p' (UnifVar (Anon i)) = UVar (UAnon i)
+p' (UnifVar (FnArg f i)) = UVar (UFnAg f i)
+p' (UnifVar (FnVal f)) = UVar (UFnR f)
+
+-- Map from all possible unknowns in the program
+type Subst = Table UVar SubstR
+
+-- Result of a substitution.
+--    Self: This variable should substitute to itself, in some form.
+--    Link v: This variable should substitute to whatever v points to in the table
+--    Type: This variable should substitute to the subst of a concrete type
+--            eg. if a lookup is Type (a -> Int) then the result is ((lookup a) -> Int)
+--    Thus, the uinification of a variable to a variable can say (v0 -> (TermVaraible v1))
+--    And the substituter will ensure (TermVariable v1) gets replaced if necessary.
 data SubstR
   = Self
-  | Link Variable
-  | Type UnifType
+  | Type UTy
+  deriving (Eq, Show)
 
--- Subst should look up to be either a UnifType
-type Subst = Table Variable SubstR
-
-unify :: [UnifConstraint] -> Subst
+unify :: [(UTy, UTy)] -> Subst
 unify = unify' (emptyTable $ Just Self)
   where
     unify' tb [] = tb
-    unify' tb (c : cs) =
-      case c of
-        (_, _) -> error "cannot unify!"
+    unify' tb (c : cs) = unify' (unify1 tb c) cs
+
+unify1 :: Subst -> (UTy, UTy) -> Subst
+-- Constants unify when they are equal
+unify1 tb (UConc c1, UConc c2)
+  | c1 == c1 = tb
+  | otherwise = error "unify failed; inconsistent concrete types"
+-- Functions unify to other functions if their subterms do
+unify1 tb (UFn a1 b1, UFn a2 b2) = unify1 (unify1 tb (a1, a2)) (b1, b2)
+-- Variables unify when we can set one to be the other.
+unify1 tb (UVar v1, k) = unifyVarTyp v1 k tb
+unify1 tb (k, UVar v2) = unifyVarTyp v2 k tb
+unify1 tb (x, y) = error $ "cannot unify!\n x=" ++ show x ++ "\n y=" ++ show y ++ " \n tbl=" ++ show tb
+
+-- Update subst by setting a variable to a type.
+--  2. Switch based on the case of that variable?
+unifyVarTyp :: UVar -> UTy -> Subst -> Subst
+unifyVarTyp v ty tbl =
+  --  1. Look up the variable in the subst.
+  case findRoot v tbl of
+    -- If that variable still leads to an unground variable, set that variable to ty
+    (Left rootVar) -> tblSet rootVar (Type ty) tbl
+    -- If that variable leads to a constant, unify with that constant.
+    (Right (UConc c2)) -> unify1 tbl (UConc c2, ty)
+    -- If that variable leads to a function, unify with that function.
+    (Right (UFn a2 b2)) -> unify1 tbl (UFn a2 b2, ty)
+    -- It is not possible for findRoot to return a UVar
+    (Right (UVar v2)) -> error "unreachable"
+
+-- Find the root of a variable in the subst mapping
+findRoot :: UVar -> Subst -> Either UVar UTy
+findRoot v tb =
+  case getTbl tb v of
+    Self -> Left v
+    -- Do I need to look through variables here?
+    (Type (UVar vn)) -> findRoot vn tb
+    (Type ut) -> Right ut
+
+-- Add equality between a variable and a term in the table.
+
+-- Find the thing a variable maps to in a subst.
+--  Either it's another unification variable, or a type.
+-- findRoot :: Variable -> Subst -> Either Variable UnifType
+-- findRoot v tb =
+
+--  data UnifVar
+--    = UnifAtom BasicType
+--    | Anon Int
+--    | FnArg FnName Int
+--    | FnVal FnName
+--    deriving (Show, Eq)
+--
+--  data UnifType
+--    = UnifVar UnifVar
+--    | UnifFn UnifType UnifType
+--    deriving (Show, Eq)
 
 -- Rewrite the program to
 --  0. Add extra annotations for the functions without type signautures
