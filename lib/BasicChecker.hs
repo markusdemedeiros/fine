@@ -175,6 +175,24 @@ data Context = Context {_terms :: Table Variable Type, _types :: Table TypeVaria
 makeLenses ''Context
 makeLenses ''Program
 
+instance Show Program where
+  show p = intercalate "\n" (typeDecls ++ bodyDecls)
+    where
+      typeDecls = (concatMap doShowDecl . bToList) (p ^. decls . dom)
+      bodyDecls = (concatMap doShowBody . bToList) (p ^. bodies . dom)
+
+      doShowDecl :: FnName -> [String]
+      doShowDecl fn = showTyDecl fn : ([showBodyDecl fn | hasBody fn])
+
+      doShowBody :: FnName -> [String]
+      doShowBody fn = [showBodyDecl fn | not (hasTy fn)]
+
+      showTyDecl fn = "val " ++ fn ++ " : " ++ show (getTbl (p ^. decls) fn)
+      showBodyDecl fn = "let " ++ fn ++ " = " ++ show (getTbl (p ^. bodies) fn)
+
+      hasBody x = bContains x (p ^. (bodies . dom))
+      hasTy x = bContains x (p ^. decls . dom)
+
 ------ abbreviations
 -- b        abbreviates   b{v: true}
 base :: BasicType -> Type
@@ -316,7 +334,7 @@ synth _ _ = undefined
 -- Algorithmic checking
 check :: Context -> Term -> Type -> Gen Constraint
 check g (TTAbs alpha k e) (TForall a1 k1 t)
-  | (k == k1) && (alpha == a1) = check (types %~ tblSet alpha k $ g) e t
+  | k == k1 && alpha == a1 = check (types %~ tblSet alpha k $ g) e t
 check g (TLam x e) (TDepFn x0 s t)
   | x == x0 = do
       c <- check (terms %~ tblSet x s $ g) e t
@@ -476,8 +494,7 @@ sumTest = testCheck tbl term typ
           "c"
           (TConst (CNInt 0))
           ( TLet "n1" todo $
-              TLet "n2" todo $
-                todo
+              TLet "n2" todo todo
           )
 
 clientTest = testSynth g e0

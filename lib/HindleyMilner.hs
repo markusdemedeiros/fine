@@ -3,12 +3,14 @@
 {-# HLINT ignore "Use record patterns" #-}
 module HindleyMilner where
 
-import BasicChecker (BasicType (..), FnName, Program, Term (..), Type (..), Variable, bodies, decls, prim)
+import BasicChecker (BasicType (..), FnName, Program, Refinement (..), Term (..), Type (..), Variable, base, bodies, decls, prim)
 import Control.Lens (Bifunctor (bimap), over, (%~), (^.))
 import Control.Monad
 import qualified Control.Monad.State as ST
 import Data.Functor ((<&>))
+import Data.Maybe (catMaybes, mapMaybe)
 import GHC.Generics (UInt)
+import Surface (fn, tyv)
 import Util
 
 -- Type checking strategy: (remember-- we ignore all refinements until we insert holes @ call sites!)
@@ -209,8 +211,8 @@ preprocessVariables = fmap (bimap p' p')
 -- Helper function: Turns a UnifType constraint into a form that treats variables uniformly.
 p' :: UnifType -> UTy
 p' (UnifFn a b) = UFn (p' a) (p' b)
-p' (UnifVar (UnifAtom BInt)) = UConc UBool
-p' (UnifVar (UnifAtom BBool)) = UConc UInt
+p' (UnifVar (UnifAtom BInt)) = UConc UInt
+p' (UnifVar (UnifAtom BBool)) = UConc UBool
 p' (UnifVar (UnifAtom (BTVar v))) = UVar (UserVar v)
 p' (UnifVar (Anon i)) = UVar (UAnon i)
 p' (UnifVar (FnArg f i)) = UVar (UFnAg f i)
@@ -237,32 +239,32 @@ unify = unify' (emptyTable $ Just Self)
     unify' tb [] = tb
     unify' tb (c : cs) = unify' (unify1 tb c) cs
 
-unify1 :: Subst -> (UTy, UTy) -> Subst
--- Constants unify when they are equal
-unify1 tb (UConc c1, UConc c2)
-  | c1 == c1 = tb
-  | otherwise = error "unify failed; inconsistent concrete types"
--- Functions unify to other functions if their subterms do
-unify1 tb (UFn a1 b1, UFn a2 b2) = unify1 (unify1 tb (a1, a2)) (b1, b2)
--- Variables unify when we can set one to be the other.
-unify1 tb (UVar v1, k) = unifyVarTyp v1 k tb
-unify1 tb (k, UVar v2) = unifyVarTyp v2 k tb
-unify1 tb (x, y) = error $ "cannot unify!\n x=" ++ show x ++ "\n y=" ++ show y ++ " \n tbl=" ++ show tb
+    unify1 :: Subst -> (UTy, UTy) -> Subst
+    -- Constants unify when they are equal
+    unify1 tb (UConc c1, UConc c2)
+      | c1 == c1 = tb
+      | otherwise = error "unify failed; inconsistent concrete types"
+    -- Functions unify to other functions if their subterms do
+    unify1 tb (UFn a1 b1, UFn a2 b2) = unify1 (unify1 tb (a1, a2)) (b1, b2)
+    -- Variables unify when we can set one to be the other.
+    unify1 tb (UVar v1, k) = unifyVarTyp v1 k tb
+    unify1 tb (k, UVar v2) = unifyVarTyp v2 k tb
+    unify1 tb (x, y) = error $ "cannot unify!\n x=" ++ show x ++ "\n y=" ++ show y ++ " \n tbl=" ++ show tb
 
--- Update subst by setting a variable to a type.
---  2. Switch based on the case of that variable?
-unifyVarTyp :: UVar -> UTy -> Subst -> Subst
-unifyVarTyp v ty tbl =
-  --  1. Look up the variable in the subst.
-  case findRoot v tbl of
-    -- If that variable still leads to an unground variable, set that variable to ty
-    (Left rootVar) -> tblSet rootVar (Type ty) tbl
-    -- If that variable leads to a constant, unify with that constant.
-    (Right (UConc c2)) -> unify1 tbl (UConc c2, ty)
-    -- If that variable leads to a function, unify with that function.
-    (Right (UFn a2 b2)) -> unify1 tbl (UFn a2 b2, ty)
-    -- It is not possible for findRoot to return a UVar
-    (Right (UVar v2)) -> error "unreachable"
+    -- Update subst by setting a variable to a type.
+    --  2. Switch based on the case of that variable?
+    unifyVarTyp :: UVar -> UTy -> Subst -> Subst
+    unifyVarTyp v ty tbl =
+      --  1. Look up the variable in the subst.
+      case findRoot v tbl of
+        -- If that variable still leads to an unground variable, set that variable to ty
+        (Left rootVar) -> tblSet rootVar (Type ty) tbl
+        -- If that variable leads to a constant, unify with that constant.
+        (Right (UConc c2)) -> unify1 tbl (UConc c2, ty)
+        -- If that variable leads to a function, unify with that function.
+        (Right (UFn a2 b2)) -> unify1 tbl (UFn a2 b2, ty)
+        -- It is not possible for findRoot to return a UVar
+        (Right (UVar v2)) -> error "unreachable"
 
 -- Find the root of a variable in the subst mapping
 findRoot :: UVar -> Subst -> Either UVar UTy
@@ -273,31 +275,78 @@ findRoot v tb =
     (Type (UVar vn)) -> findRoot vn tb
     (Type ut) -> Right ut
 
--- Add equality between a variable and a term in the table.
+subTyp :: Subst -> Type -> Type
+subTyp s (TRBase (BTVar v) r) =
+  case findRoot (UserVar v) s of
+    -- Free type variable; refined to a hole?
+    (Left uv) -> uvToTy uv
+    (Right ut) -> utyToTy ut
+subTyp s (TDepFn v t0 t1) = TDepFn v (subTyp s t0) (subTyp s t1)
+subTyp s x = x
 
--- Find the thing a variable maps to in a subst.
---  Either it's another unification variable, or a type.
--- findRoot :: Variable -> Subst -> Either Variable UnifType
--- findRoot v tb =
+uvToTy (UserVar vr) = TRBase (BTVar vr) Hole
+uvToTy (UAnon i) = TRBase (BTVar $ "tmp." ++ show i) Hole
+uvToTy (UFnAg fn i) = TRBase (BTVar $ fn ++ ".arg." ++ show i) Hole
+uvToTy (UFnR fn) = TRBase (BTVar $ fn ++ ".val") Hole
 
---  data UnifVar
---    = UnifAtom BasicType
---    | Anon Int
---    | FnArg FnName Int
---    | FnVal FnName
---    deriving (Show, Eq)
+utyToTy = fst . flip utyToTy' 0
+  where
+    utyToTy' (UConc UBool) i = (TRBase BBool Hole, i)
+    utyToTy' (UConc UInt) i = (TRBase BInt Hole, i)
+    utyToTy' (UVar uv) i = (uvToTy uv, i)
+    utyToTy' (UFn u0 u1) i =
+      let (u0', i') = utyToTy' u0 (i + 1)
+          (u1', i'') = utyToTy' u1 i'
+       in (TDepFn ("inf.dep." ++ show i) u0' u1', i'')
+
+-- data UVar
+--   = UAnon Int
+--   | UFnAg FnName Int
+--   | UFnR FnName
+--   | UserVar String
+--   deriving (Show, Eq)
 --
---  data UnifType
---    = UnifVar UnifVar
---    | UnifFn UnifType UnifType
---    deriving (Show, Eq)
+-- -- Grounded types.
+-- data UConcrete
+--   = UBool
+--   | UInt
+--   deriving (Show, Eq)
+--
+-- -- Trees of types.
+-- data UTy
+--   = UConc UConcrete
+--   | UVar UVar
+--   | UFn UTy UTy
+--   deriving (Show, Eq)
+
+-- subTyp s (UnifFn uv) = todo
+
+subTerm :: Subst -> Term -> Term
+subTerm = todo
+
+showUnify :: Program -> IO ()
+showUnify = print . unify . preprocessVariables . constrain
+
+explicitSigs :: Subst -> Program -> Program
+explicitSigs s p = decls %~ const newdtbl $ p
+  where
+    newdtbl = foldl (\tsf (fn, ft) -> tblSet fn ft tsf) (p ^. decls) newDecls
+    newDecls = mapMaybe getOrMakeDecl (bToList (p ^. (bodies . dom)))
+    getOrMakeDecl fn
+      | bContains fn (p ^. (decls . dom)) = Nothing
+      | otherwise = case findRoot (UFnR fn) s of
+          (Left uv) -> Just (fn, uvToTy uv)
+          (Right uty) -> Just (fn, utyToTy uty)
+
+rewriteTypes :: Subst -> Program -> Program
+rewriteTypes s = decls %~ fmap (subTyp s)
 
 -- Rewrite the program to
---  0. Add extra annotations for the functions without type signautures
---  1. Add explicit forall's to all function signatures
---  2. Apply the subtitutions to all type signatures and bodies
---  2.1. Add explicit term-level type abstraction at the start of functiona
---  2.2. Add explicit term-level type applications at call sites (with holes)
+--  DONE 0. Add extra annotations for the functions without type signautures
+--       1. Apply the subtitutions to all type signatures and bodies
+--       2. Add explicit forall's to all function signatures
+--       2.1. Add explicit term-level type abstraction at the start of functiona
+--       2.2. Add explicit term-level type applications at call sites (with holes)
 rewrite :: Program -> Arity -> Subst -> Program
 rewrite = todo
 

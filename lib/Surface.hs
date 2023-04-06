@@ -184,3 +184,11 @@ prog3 = parse $ do
   _val "v" $ refine int "z" (eq' (var' "z") (int' 4))
   _let "main" [] $
     app (lam "x" (var "x")) "id"
+
+prog4 :: Program
+prog4 = parse $ do
+  _val "x" $ fn (tyv "'a") (tyv "'b")
+  -- _val "y" $ fn (tyv "'b") (tyv "'a")
+  -- _val "main" $ fn (tyv "'e") (tyv "'f")
+  _let "main" ["z"] $
+    cond "z" (var "x") (var "y")
