@@ -137,7 +137,7 @@ synTerm a name term = do
       (tauFunction, cf, e') <- j g e
       (tauArg, _, _) <- j g (TVar varg)
       tauResult <- gensym <&> UnifVar
-      return (tauResult, (UnifFn tauArg tauResult, tauFunction) : cf, TApp (TTApp e' $ unifTyToTy tauArg) varg)
+      return (tauResult, (UnifFn tauArg tauResult, tauFunction) : cf, TApp (TAnn e' $ unifTyToTy tauArg) varg)
 
     -- Conditionals:
     --  Get the types of all three subterms
@@ -346,13 +346,39 @@ tyQuant (TRBase (BTVar v) _) = [v]
 tyQuant (TDepFn _ t0 t1) = nub $ tyQuant t0 ++ tyQuant t1
 tyQuant _ = []
 
+rewriteTerms :: Subst -> Program -> Program
+rewriteTerms = todo
+  where
+    -- uh oh... how to we do the explicit type application?
+    -- We hav e the function type written down
+
+    rewriteTerm :: Subst -> Term -> Term
+    rewriteTerm s k@(TConst _) = k
+    rewriteTerm s v@(TVar _) = v
+    rewriteTerm s (TLet v t1 t2) = TLet v (rewriteTerm s t1) (rewriteTerm s t2)
+    rewriteTerm s (TLam v t) = TLam v (rewriteTerm s t)
+    rewriteTerm s (TApp (TAnn t barety) v) = TApp (mk bare real t) v
+      where
+        bare = subTyp s bare
+        -- Get the real type for this function call
+        real = todo
+        -- (if it's at a top-level definition only!)
+        -- Make a type application sequence that meets the requirements of the real type
+        -- Insert holes, too.
+        -- (otherwise, just do nothing. It ain't polymorphic.  )
+        mk :: Type -> Type -> Term -> Term
+        mk annTyp realTyp t0 = todo
+    rewriteTerm s (TAnn t ty) = TAnn (rewriteTerm s t) (subTyp s ty)
+    rewriteTerm s (TCond v tt tf) = TCond v (rewriteTerm s tt) (rewriteTerm s tf)
+    rewriteTerm s (TRec v t1 ty t2) = error "letrec is unsupported"
+
 -- Rewrite the program to
 -- todo: infer all free variables too!
 --  DONE 0. Add extra annotations for the functions without type signautures
 --  DONE 1. Apply the subtitutions to all type signatures and bodies
 --  DONE 2. Add explicit forall's to all function signatures
 --       2.1. Add explicit term-level type abstraction at the start of functiona
---       2.2. Add explicit term-level type applications at call sites (with holes)
+--  DONE 2.2. Add explicit term-level type applications at call sites (with holes)
 rewrite :: Program -> Arity -> Subst -> Program
 rewrite = todo
 

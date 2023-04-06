@@ -120,14 +120,23 @@ false, true :: Term
 false = TConst (CNBool False)
 true = TConst (CNBool True)
 
-eq, add, sub, leq, geq, lt, gt :: Term -> Term -> Term
-eq = mkBinop $ TConst (CNOp Equal)
-add = mkBinop $ TConst (CNOp Add)
-sub = mkBinop $ TConst (CNOp Sub)
-leq = mkBinop $ TConst (CNOp Leq)
-geq = mkBinop $ TConst (CNOp Geq)
-lt = mkBinop $ TConst (CNOp Lt)
-gt = mkBinop $ TConst (CNOp Gt)
+-- eq, add, sub, leq, geq, lt, gt :: Term -> Term -> Term
+-- eq = mkBinop $ TConst (CNOp Equal)
+-- add = mkBinop $ TConst (CNOp Add)
+-- sub = mkBinop $ TConst (CNOp Sub)
+-- leq = mkBinop $ TConst (CNOp Leq)
+-- geq = mkBinop $ TConst (CNOp Geq)
+-- lt = mkBinop $ TConst (CNOp Lt)
+-- gt = mkBinop $ TConst (CNOp Gt)
+
+eq, add, sub, leq, geq, lt, gt :: Term
+eq = TConst $ CNOp Equal
+add = TConst $ CNOp Add
+sub = TConst $ CNOp Sub
+leq = TConst $ CNOp Leq
+geq = TConst $ CNOp Geq
+lt = TConst $ CNOp Lt
+gt = TConst $ CNOp Gt
 
 -- neg, and, or
 
@@ -192,3 +201,25 @@ prog4 = parse $ do
   -- _val "main" $ fn (tyv "'e") (tyv "'f")
   _let "main" ["z"] $
     cond "z" (var "x") (var "y")
+
+prog5 :: Program
+prog5 = parse $ do
+  _val "assert" $ refine bool "b" (var' "b")
+  _let "assert" ["b"] $ integer 0
+
+  _val "zero" $ refine int "v" (eq' (var' "v") (int' 0))
+
+  -- explicit version (no holes)
+  _val "abs" $ refn "x" int (refine int "v" (leq' (int' 0) (var' "v")))
+  _let "abs" ["x"] $
+    bind "c" (app (app leq "zero") "x") $
+      cond
+        "c"
+        (var "x")
+        (app (app sub "zero") "x")
+
+  _val "main" $ fn int int
+  _let "main" ["y"] $
+    bind "z" (app (var "abs") "y") $
+      bind "c" (app (app leq "zero") "z") $
+        (app (var "assert") "z")
