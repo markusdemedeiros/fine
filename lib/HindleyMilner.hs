@@ -3,11 +3,12 @@
 {-# HLINT ignore "Use record patterns" #-}
 module HindleyMilner where
 
-import BasicChecker (BasicType (..), FnName, Program, Refinement (..), Term (..), Type (..), Variable, base, bodies, decls, prim)
+import BasicChecker (BasicType (..), FnName, Kind (..), Program, Refinement (..), Term (..), Type (..), Variable, base, bodies, decls, prim)
 import Control.Lens (Bifunctor (bimap), over, (%~), (^.))
 import Control.Monad
 import qualified Control.Monad.State as ST
 import Data.Functor ((<&>))
+import Data.List (nub)
 import Data.Maybe (catMaybes, mapMaybe)
 import GHC.Generics (UInt)
 import Surface (fn, tyv)
@@ -65,7 +66,7 @@ gensym = do
   return $ Anon r
 
 collectArity :: Program -> Arity
-collectArity p = def %~ const (Just 1) $ typeArity <$> (p ^. decls)
+collectArity p = def %~ const (Just 1) $ typeArity <$> p ^. decls
   where
     typeArity :: Type -> Int
     typeArity (TRBase {}) = 1
@@ -78,64 +79,65 @@ declType arity name = mkty 0 (getTbl arity name)
   where
     mkty :: Int -> Int -> UnifType
     mkty a n
-      | (a + 1) == n = UnifVar $ FnVal name
-      | (a + 1) < n = UnifFn (UnifVar (FnArg name a)) $ mkty (a + 1) n
+      | a + 1 == n = UnifVar $ FnVal name
+      | a + 1 < n = UnifFn (UnifVar (FnArg name a)) $ mkty (a + 1) n
 
 -- Convert a type into its base form
 eraseRefinements :: Type -> UnifType
 eraseRefinements (TRBase b _) = UnifVar $ UnifAtom b
 eraseRefinements (TDepFn _ t1 t2) = UnifFn (eraseRefinements t1) (eraseRefinements t2)
-eraseRefinements (TForall _ _ _) = error "illegal type quantifier in erase refinements"
+eraseRefinements (TForall {}) = error "illegal type quantifier in erase refinements"
 
 type Gamma = Table Variable UnifType
 
 -- Get constraints for a single body
 -- Synthesize the entire most general type, and constrain it to be equal to (declType)
-synTerm :: Arity -> FnName -> Term -> ConstraintST [UnifConstraint]
+-- When fresh variables are generated, we also rewrite the program with explicit annotations.
+synTerm :: Arity -> FnName -> Term -> ConstraintST ([UnifConstraint], Term)
 synTerm a name term = do
-  (tau, cs) <- j (emptyTable Nothing) term
-  return $ (declType a name, tau) : cs
+  (tau, cs, trm1) <- j (emptyTable Nothing) term
+  return $ ((declType a name, tau) : cs, trm1)
   where
     -- Extends Algorithm J
     -- Does not implement let-polymorphism
     -- https://en.wikipedia.org/wiki/Hindley%E2%80%93Milner_type_system
-    j :: Gamma -> Term -> ConstraintST (UnifType, [UnifConstraint])
+    j :: Gamma -> Term -> ConstraintST (UnifType, [UnifConstraint], Term)
 
     -- Constants: Match base type of primitve type
-    j g (TConst k) = return (eraseRefinements $ prim k, [])
+    j g x@(TConst k) = return (eraseRefinements $ prim k, [], x)
     -- Variables:
     --    If v is free, return the declType.
     --    If v is bound, lookup the type in the context.
     --    No new constraints in either case.
-    j g (TVar v)
-      | bContains v (g ^. dom) = return (getTbl g v, [])
-      | otherwise = return (declType a v, [])
+    j g x@(TVar v)
+      | bContains v (g ^. dom) = return (getTbl g v, [], x)
+      | otherwise = return (declType a v, [], x)
     -- Let bindings:
     --  For now, we're going to do this the same as lambda. No let-polymorphism.
     j g (TLet x bound body) = do
-      (te, ce) <- j g bound
-      (tb, cb) <- j (tblSet x te g) body
-      return (tb, ce ++ cb)
+      (te, ce, bound') <- j g bound
+      (tb, cb, body') <- j (tblSet x te g) body
+      return (tb, ce ++ cb, TLet x bound' body')
     -- Lambda bindings:
     --  Allocate fresh unification variable tau
     --  Set x to tau in g, check the body to get tau'
     --  Result is tau->tau'; no new bindings.
     j g (TLam x body) = do
       tau <- gensym <&> UnifVar
-      (tau', cs) <- j (tblSet x tau g) body
-      return (UnifFn tau tau', cs)
+      (tau', cs, body') <- j (tblSet x tau g) body
+      return (UnifFn tau tau', cs, TLam x body')
     -- Annotations:
     --  Get the type of the inner term
     --  Constrain that type to the annotation
     --  Return the preferred type (the annotation)
     j g (TAnn t typ) = do
-      (tau, cs) <- j g t
-      return (eraseRefinements typ, (eraseRefinements typ, tau) : cs)
+      (tau, cs, a') <- j g t
+      return (eraseRefinements typ, (eraseRefinements typ, tau) : cs, TAnn a' typ)
     j g (TApp e varg) = do
-      (tauFunction, cf) <- j g e
-      tauArg <- j g (TVar varg) <&> fst
+      (tauFunction, cf, e') <- j g e
+      (tauArg, _, _) <- j g (TVar varg)
       tauResult <- gensym <&> UnifVar
-      return (tauResult, (UnifFn tauArg tauResult, tauFunction) : cf)
+      return (tauResult, (UnifFn tauArg tauResult, tauFunction) : cf, TApp (TTApp e' $ unifTyToTy tauArg) varg)
 
     -- Conditionals:
     --  Get the types of all three subterms
@@ -143,16 +145,16 @@ synTerm a name term = do
     --  Contrain the tt and tf types to be equal (prefer tt)
     j g (TCond vc tt tf) = do
       -- It is sound to treat vc as if it was a variable term here.
-      (tauc, cc) <- j g (TVar vc)
-      (taut, ct) <- j g tt
-      (tauf, cf) <- j g tf
+      (tauc, cc, _) <- j g (TVar vc)
+      (taut, ct, tt') <- j g tt
+      (tauf, cf, tf') <- j g tf
       let condPred = (tauc, UnifVar . UnifAtom $ BBool)
       let branchPred = (taut, tauf)
-      return (taut, condPred : branchPred : (cc ++ ct ++ cf))
+      return (taut, condPred : branchPred : (cc ++ ct ++ cf), TCond vc tt' tf')
 
     -- Letrec:
     --  TODO
-    j g (TRec v bound ty body) = do todo
+    j g (TRec v bound ty body) = todo
     j _ _ = error "unhandled case in algorithm j"
 
 -- Get constraints for a single function declaration
@@ -160,16 +162,19 @@ synDecl :: Arity -> FnName -> Type -> [UnifConstraint]
 synDecl a name typ = [(eraseRefinements typ, declType a name)]
 
 -- Get all of the type inference constraints for a program
-constrain :: Program -> [UnifConstraint]
-constrain p = declConstraints ++ bodyConstraints
+constrain :: Program -> ([UnifConstraint], Program)
+constrain p = (declConstraints ++ bodyConstraints, finalProgram)
   where
     arity = collectArity p
-    declConstraints = concatMap (\nm -> synDecl arity nm (getTbl (p ^. decls) nm)) (p ^. (decls . dom))
-    bodyConstraints = fst . flip ST.runState 0 $ foldM (\c0 nm -> synTerm arity nm (getTbl (p ^. bodies) nm) <&> (++ c0)) [] (p ^. (bodies . dom))
+    declConstraints = concatMap (\nm -> synDecl arity nm (getTbl (p ^. decls) nm)) (p ^. decls . dom)
+    bodyConstraints = fst bodyResults
+    finalProgram = bodies %~ const (snd bodyResults) $ p
+
+    bodyResults = fst . flip ST.runState 0 $ foldM (\(csf, psf) nm -> synTerm arity nm (getTbl (p ^. bodies) nm) >>= (\(x, y) -> return (x ++ csf, tblSet nm y psf))) ([], p ^. bodies) (p ^. bodies . dom)
 
 -- Helpful for debugging
 showConstraints :: Program -> IO ()
-showConstraints p = mapM_ (putStrLn . pretty) (constrain p)
+showConstraints p = mapM_ (putStrLn . pretty) (fst (constrain p))
   where
     pretty :: UnifConstraint -> String
     pretty (c0, c1) = pretty' c0 ++ " = " ++ pretty' c1 ++ ";"
@@ -299,52 +304,53 @@ utyToTy = fst . flip utyToTy' 0
           (u1', i'') = utyToTy' u1 i'
        in (TDepFn ("inf.dep." ++ show i) u0' u1', i'')
 
--- data UVar
---   = UAnon Int
---   | UFnAg FnName Int
---   | UFnR FnName
---   | UserVar String
---   deriving (Show, Eq)
---
--- -- Grounded types.
--- data UConcrete
---   = UBool
---   | UInt
---   deriving (Show, Eq)
---
--- -- Trees of types.
--- data UTy
---   = UConc UConcrete
---   | UVar UVar
---   | UFn UTy UTy
---   deriving (Show, Eq)
-
--- subTyp s (UnifFn uv) = todo
+unifTyToTy :: UnifType -> Type
+unifTyToTy = todo
 
 subTerm :: Subst -> Term -> Term
-subTerm = todo
+subTerm s (TLet v t0 t1) = TLet v (subTerm s t0) (subTerm s t1)
+subTerm s (TLam v t) = TLam v (subTerm s t)
+subTerm s (TApp t v) = TApp (subTerm s t) v
+subTerm s (TAnn t ty) = TAnn (subTerm s t) (subTyp s ty)
+subTerm s (TCond v t1 t2) = TCond v (subTerm s t1) (subTerm s t2)
+subTerm s (TRec v t1 ty t2) = TRec v (subTerm s t1) (subTyp s ty) (subTerm s t2)
+subTerm s t = t
 
 showUnify :: Program -> IO ()
-showUnify = print . unify . preprocessVariables . constrain
+showUnify = print . unify . preprocessVariables . fst . constrain
 
 explicitSigs :: Subst -> Program -> Program
 explicitSigs s p = decls %~ const newdtbl $ p
   where
     newdtbl = foldl (\tsf (fn, ft) -> tblSet fn ft tsf) (p ^. decls) newDecls
-    newDecls = mapMaybe getOrMakeDecl (bToList (p ^. (bodies . dom)))
+    newDecls = mapMaybe getOrMakeDecl (bToList (p ^. bodies . dom))
     getOrMakeDecl fn
-      | bContains fn (p ^. (decls . dom)) = Nothing
+      | bContains fn (p ^. decls . dom) = Nothing
       | otherwise = case findRoot (UFnR fn) s of
           (Left uv) -> Just (fn, uvToTy uv)
           (Right uty) -> Just (fn, utyToTy uty)
 
 rewriteTypes :: Subst -> Program -> Program
-rewriteTypes s = decls %~ fmap (subTyp s)
+rewriteTypes s = decls %~ fmap (explicitforall . subTyp s)
+  where
+    explicitforall :: Type -> Type
+    explicitforall t = doit (tyQuant t) t
+
+    doit [] t = t
+    doit (n : ns) t = TForall n BaseKind $ doit ns t
+
+-- Canonical quantification over type variables in a term.
+
+tyQuant :: Type -> [String]
+tyQuant (TRBase (BTVar v) _) = [v]
+tyQuant (TDepFn _ t0 t1) = nub $ tyQuant t0 ++ tyQuant t1
+tyQuant _ = []
 
 -- Rewrite the program to
+-- todo: infer all free variables too!
 --  DONE 0. Add extra annotations for the functions without type signautures
---       1. Apply the subtitutions to all type signatures and bodies
---       2. Add explicit forall's to all function signatures
+--  DONE 1. Apply the subtitutions to all type signatures and bodies
+--  DONE 2. Add explicit forall's to all function signatures
 --       2.1. Add explicit term-level type abstraction at the start of functiona
 --       2.2. Add explicit term-level type applications at call sites (with holes)
 rewrite :: Program -> Arity -> Subst -> Program
