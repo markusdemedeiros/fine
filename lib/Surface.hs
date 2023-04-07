@@ -222,4 +222,4 @@ prog5 = parse $ do
   _let "main" ["y"] $
     bind "z" (app (var "abs") "y") $
       bind "c" (app (app leq "zero") "z") $
-        (app (var "assert") "z")
+        (app (var "assert") "c")
