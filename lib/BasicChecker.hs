@@ -7,6 +7,7 @@ import Control.Lens (makeLenses, (%~), (^.))
 import Control.Monad.State
 import Data.Functor ((<&>))
 import Data.List (intercalate)
+import Debug.Trace (trace, traceM)
 import Util
 
 -- Syntax for STLC with QF-UFLIA
@@ -170,6 +171,7 @@ data Kind = BaseKind | StarKind deriving (Eq, Show)
 type TypeVariable = String
 
 data Context = Context {_terms :: Table Variable Type, _types :: Table TypeVariable Kind}
+  deriving (Show)
 
 -- Datatype lenses
 makeLenses ''Context
@@ -218,21 +220,27 @@ iprim = TRBase BInt . RKnown "v" . PInterpOp Equal (PVar "v") . PInt
 -- oprim(op) := x:int -> (y:int -> int{v: v=x+y})
 oprim :: InterpOp -> Type
 oprim Add = mkOprim Add
-oprim Sub = mkOprim Add
+oprim Sub = mkOprim Sub
+oprim Equal = mkOprim Equal
+oprim Leq = mkOprim Leq
+oprim Lt = mkOprim Lt
+oprim Geq = mkOprim Geq
+oprim Gt = mkOprim Gt
+
+-- fixme: equal is still a little f***ed
 
 mkOprim op =
   TDepFn "x" (base BInt) $
     TDepFn "y" (base BInt) $
-      TRBase b (RKnown "v" (PInterpOp Equal (PVar "v") (PInterpOp op (PVar "x") (PVar "y"))))
+      TRBase (brt op) (RKnown "v" (PInterpOp Equal (PVar "v") (PInterpOp op (PVar "x") (PVar "y"))))
   where
-    b = case op of
-      Add -> BInt
-      Sub -> BInt
-      Leq -> BBool
-      Lt -> BBool
-      Geq -> BBool
-      Gt -> BBool
-      Equal -> BBool
+    brt Add = BInt
+    brt Sub = BInt
+    brt Equal = error "amongus"
+    brt Leq = BBool
+    brt Lt = BBool
+    brt Geq = BBool
+    brt Gt = BBool
 
 class Subst a where
   subst :: a -> Variable -> Predicate -> a
@@ -291,7 +299,7 @@ sub (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) =
   where
     ci = sub s2 s1
     co = sub (subst t1 x1 (PVar x2)) t2
-sub _ _ = undefined
+sub t1 t2 = trace ("sub of " ++ show t1 ++ " <: " ++ show t2 ++ " undefined") undefined
 
 -- Algorithmic state
 
@@ -311,52 +319,83 @@ gensym = do
 
 -- Algorithmic synthesis
 synth :: Context -> Term -> Gen (Constraint, Type)
-synth g (TTApp e tau) = do
+synth c t = synth1 c t
+
+synth1 g (TTApp e tau) = do
+  -- traceM "[0/4 ttapp]"
   t <- fresh g tau
+  -- traceM "[1/4 ttapp]"
   syn_e <- synth g e
+  -- traceM "[2/4 ttapp]"
   let (c, TForall alpha k s) = syn_e
+  -- traceM "[3/4 ttapp]"
   return (c, substTyVar alpha t s)
-synth g (TVar x) = return (CPred $ PBool True, self x (getTbl (g ^. terms) x))
+synth1 g (TVar x) = do
+  -- traceM "[0/1 tvar]"
+  return (CPred $ PBool True, self x (getTbl (g ^. terms) x))
 -- chapter 3 version:
 -- return (CPred (PBool True), g x)
-synth _ (TConst c) = return (CPred $ PBool True, prim c)
-synth g (TApp e y) = do
+synth1 _ (TConst c) = do
+  -- traceM "[0/1 tconst]"
+  return (CPred $ PBool True, prim c)
+synth1 g (TApp e y) = do
+  -- traceM $ "[0/4 tapp]" ++ show (TApp e y)
   synR <- synth g e
+  -- traceM "[1/4 tapp]"
   let (c, TDepFn x s t) = synR
+  -- traceM "[2/4 tapp]"
   c1 <- check g (TVar y) s
+  -- traceM "[3/4 tapp]"
   return (CAnd c c1, subst t x (PVar y))
-synth g (TAnn e s) = do
+synth1 g (TAnn e s) = do
+  -- traceM "[0/3 tann]"
   t <- fresh g s
+  -- traceM "[1/3 tann]"
   c <- check g e t
+  -- traceM "[2/3 tann]"
   return (c, t)
-synth _ _ = undefined
+synth1 _ _ = undefined
 
 -- Algorithmic checking
 check :: Context -> Term -> Type -> Gen Constraint
-check g (TTAbs alpha k e) (TForall a1 k1 t)
+check c t ty = check1 c t ty
+
+check1 g (TTAbs alpha k e) (TForall a1 k1 t)
   | k == k1 && alpha == a1 = check (types %~ tblSet alpha k $ g) e t
-check g (TLam x e) (TDepFn x0 s t)
+check1 g (TLam x e) (TDepFn x0 s t)
   | x == x0 = do
+      -- traceM "[0/2 tlet]"
       c <- check (terms %~ tblSet x s $ g) e t
+      -- traceM "[1/2 tlet]"
       return $ cimp x s c
-check g (TLet x e1 e2) t2 = do
+check1 g (TLet x e1 e2) t2 = do
+  -- traceM $ "[0/3 tlet]" ++ show (TLet x e1 e2)
   (c1, t1) <- synth g e1
+  -- traceM "[1/3 tlet]"
   c2 <- check (terms %~ tblSet x t1 $ g) e2 t2
+  -- traceM "[2/3 tlet]"
   return $ CAnd c1 (cimp x t1 c2)
-check g (TCond x e1 e2) t = do
+check1 g (TCond x e1 e2) t = do
+  -- traceM "[0/4 tcond]"
   y <- gensym
+  -- traceM "[1/4 tcond]"
   c1 <- check g e1 t <&> cimp y (TRBase BInt (trefine (PVar x)))
+  -- traceM "[2/4 tcond]"
   c2 <- check g e2 t <&> cimp y (TRBase BInt (trefine (PNeg (PVar x))))
+  -- traceM "[3/4 tcond]"
   return $ CAnd c1 c2
-check g (TRec x e1 s1 e2) t = do
+check1 g (TRec x e1 s1 e2) t = do
   t1 <- fresh g s1
   let g1 = terms %~ tblSet x t1 $ g
   c1 <- check g1 e1 t
   c2 <- check g1 e2 t
   return $ CAnd c1 c2
-check g e t = do
+check1 g e t = do
+  -- traceM "[0/3 checksynth]"
   (c, s) <- synth g e
+  -- traceM "[1/3 checksynth]"
   let c1 = sub s t
+  -- traceM "[2/3 checksynth]"
   return $ CAnd c c1
 
 -- Selfificaiton
@@ -398,6 +437,18 @@ cleanupConstraint c = case clean c of
     clean (CFun v b p c) =
       clean c >>= Just . CFun v b p
     clean c = Just c
+
+------ Typechecking a program
+
+-- Typecheck all bodies in a program
+tyckProgram :: Program -> Table FnName Constraint
+tyckProgram p = foldl (\tsf fn -> tblSet fn (tyckF fn) tsf) (emptyTable Nothing) bods
+  where
+    -- For now, no type variables ;)
+    ctxTy = foldl (\csf fn -> tblSet fn (getTbl (p ^. decls) fn) csf) (emptyTable Nothing) (p ^. (decls . dom))
+    gamma = Context ctxTy (emptyTable Nothing)
+    bods = p ^. bodies ^. dom
+    tyckF fn = evalState (check gamma (getTbl (p ^. bodies) fn) (getTbl (p ^. decls) fn)) defaultState
 
 ------ Tests
 

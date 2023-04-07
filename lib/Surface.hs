@@ -204,8 +204,8 @@ prog4 = parse $ do
 
 prog5 :: Program
 prog5 = parse $ do
-  _val "assert" $ refine bool "b" (var' "b")
-  _let "assert" ["b"] $ integer 0
+  _val "assert" $ refn "b" (refine bool "b" (var' "b")) int
+  -- _let "assert" ["b"] $ integer 0
 
   _val "zero" $ refine int "v" (eq' (var' "v") (int' 0))
 
@@ -218,7 +218,7 @@ prog5 = parse $ do
         (var "x")
         (app (app sub "zero") "x")
 
-  _val "main" $ fn int int
+  _val "main" $ refn "y" int int
   _let "main" ["y"] $
     bind "z" (app (var "abs") "y") $
       bind "c" (app (app leq "zero") "z") $
