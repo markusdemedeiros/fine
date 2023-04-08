@@ -32,7 +32,8 @@ executable fine
                     STLC,
                     BasicChecker,
                     Surface,
-                    HindleyMilner
+                    HindleyMilner,
+                    DebugMode
                   
 
     -- LANGUAGE extensions used by modules in this package.
@@ -48,7 +49,8 @@ executable fine
                       unordered-containers ^>= 0.2.19.1,
                       hashable ^>= 1.4.2.0,
                       mtl ^>= 2.2.2,
-                      HUnit ^>= 1.6.2.0
+                      HUnit ^>= 1.6.2.0,
+                      process ^>= 1.6.17.0
 
 
     hs-source-dirs:   app,

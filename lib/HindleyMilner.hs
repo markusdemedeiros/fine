@@ -11,7 +11,7 @@ import Data.Functor ((<&>))
 import Data.List (nub)
 import Data.Maybe (catMaybes, mapMaybe)
 import GHC.Generics (UInt)
-import Surface (fn, tyv)
+import Surface (tyv)
 import Util
 
 -- Type checking strategy: (remember-- we ignore all refinements until we insert holes @ call sites!)
@@ -58,6 +58,12 @@ type Arity = Table FnName Int
 
 -- Global State for creating fresh variables across the program
 type ConstraintST = ST.State Int
+
+genty :: ConstraintST String
+genty = do
+  r <- ST.get
+  ST.put (r + 1)
+  return $ "tau." ++ show r
 
 gensym :: ConstraintST UnifVar
 gensym = do
@@ -111,9 +117,9 @@ synTerm a name term = do
     --    No new constraints in either case.
     j g x@(TVar v)
       | bContains v (g ^. dom) = return (getTbl g v, [], x)
-      | otherwise = return (declType a v, [], x)
-    -- Let bindings:
-    --  For now, we're going to do this the same as lambda. No let-polymorphism.
+      | otherwise = error $ "unsupported global function " ++ v -- return (declType a v, [], x)
+      -- Let bindings:
+      --  For now, we're going to do this the same as lambda. No let-polymorphism.
     j g (TLet x bound body) = do
       (te, ce, bound') <- j g bound
       (tb, cb, body') <- j (tblSet x te g) body
@@ -135,9 +141,15 @@ synTerm a name term = do
       return (eraseRefinements typ, (eraseRefinements typ, tau) : cs, TAnn a' typ)
     j g (TApp e varg) = do
       (tauFunction, cf, e') <- j g e
-      (tauArg, _, _) <- j g (TVar varg)
+      (tauArg, cv, eVarg) <- j g (TVar varg)
+      -- If the variable is not just a variable (ie. we're applying to a global variable) let-bind to put in ANF
+      eNew <- case eVarg of
+        (TVar v') -> return $ TApp e' v'
+        ex -> do
+          tb <- genty
+          return $ TLet tb ex $ TApp e' tb
       tauResult <- gensym <&> UnifVar
-      return (tauResult, (UnifFn tauArg tauResult, tauFunction) : cf, TApp (TAnn e' $ unifTyToTy tauArg) varg)
+      return (tauResult, (UnifFn tauArg tauResult, tauFunction) : cf, TApp e' varg)
 
     -- Conditionals:
     --  Get the types of all three subterms
@@ -154,7 +166,7 @@ synTerm a name term = do
 
     -- Letrec:
     --  TODO
-    j g (TRec v bound ty body) = todo
+    j g (TRec v bound ty body) = error "letrec unimplemented in algorithm j"
     j _ _ = error "unhandled case in algorithm j"
 
 -- Get constraints for a single function declaration
@@ -305,7 +317,7 @@ utyToTy = fst . flip utyToTy' 0
        in (TDepFn ("inf.dep." ++ show i) u0' u1', i'')
 
 unifTyToTy :: UnifType -> Type
-unifTyToTy = todo
+unifTyToTy = error "unifyTytyTy unimplemented"
 
 subTerm :: Subst -> Term -> Term
 subTerm s (TLet v t0 t1) = TLet v (subTerm s t0) (subTerm s t1)
@@ -347,7 +359,7 @@ tyQuant (TDepFn _ t0 t1) = nub $ tyQuant t0 ++ tyQuant t1
 tyQuant _ = []
 
 rewriteTerms :: Subst -> Program -> Program
-rewriteTerms = todo
+rewriteTerms = error "rewrite terms unimplemented"
   where
     -- uh oh... how to we do the explicit type application?
     -- We hav e the function type written down

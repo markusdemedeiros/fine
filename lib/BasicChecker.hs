@@ -1,5 +1,8 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Use record patterns" #-}
 
 module BasicChecker where
 
@@ -11,6 +14,9 @@ import Debug.Trace (trace, traceM)
 import Util
 
 -- Syntax for STLC with QF-UFLIA
+
+binder :: String
+binder = "nu"
 
 type FnName = String
 
@@ -83,9 +89,11 @@ data HornVariable
   deriving (Eq)
 
 instance Show HornVariable where
-  -- This is way too verbose
-  -- show (HornVariable v b tys) = "kappa{" ++ v ++ "}@(" ++ show b ++ " | " ++ intercalate ", " (fmap show tys) ++ ")"
-  show (HornVariable v b tys) = "kappa{" ++ v ++ "}"
+  -- This is way too verbose?
+  show :: HornVariable -> String
+  show (HornVariable v b tys) = "kappa{" ++ v ++ "}@(" ++ show b ++ " | " ++ intercalate ", " (fmap show tys) ++ ")"
+
+-- show (HornVariable v b tys) = "kappa{" ++ v ++ "}"
 
 data Predicate
   = PVar Variable
@@ -116,9 +124,7 @@ data Constraint
   | CAnd Constraint Constraint
   | CFun Variable BasicType Predicate Constraint -- forall x: b. p => c
   deriving
-    ( -- | CImp Variable Type Constraint -- (x :: t) => c
-      Eq
-    )
+    (Eq)
 
 instance Show Constraint where
   show (CPred p) = show p
@@ -139,12 +145,12 @@ instance Show BasicType where
   show (BTVar x) = x
 
 data Refinement
-  = RKnown Binder Predicate
+  = RKnown Predicate
   | Hole
   deriving (Eq)
 
 instance Show Refinement where
-  show (RKnown v p) = "{" ++ v ++ ": " ++ show p ++ "}"
+  show (RKnown p) = "{" ++ binder ++ ": " ++ show p ++ "}"
   show Hole = "{*}"
 
 data Type
@@ -154,7 +160,7 @@ data Type
   deriving (Eq)
 
 instance Show Type where
-  show (TRBase b (RKnown _ (PBool True))) = show b
+  show (TRBase b (RKnown (PBool True))) = show b
   show (TRBase b r) = show b ++ show r
   show (TDepFn v t s) = v ++ ":" ++ show t ++ " -> " ++ show s
   show (TForall tv k t) = "forall " ++ tv ++ " : " ++ show k ++ ". (" ++ show t ++ ")"
@@ -202,19 +208,19 @@ base b = TRBase b (trefine (PBool True))
 -- {v:p}    abbreviates   b{v: p}             (when b is clear)
 -- b{p}     abbreviates   b{v: p}             (when p doesn't use the binder v)
 trefine :: Predicate -> Refinement
-trefine = RKnown "v"
+trefine = RKnown
 
 ------ primitive types
 -- primitive types for all constants
 prim :: Constant -> Type
 prim (CNInt i) = iprim i
 prim (CNOp op) = oprim op
-prim (CNBool True) = TRBase BBool $ RKnown "b" (PVar "b")
-prim (CNBool False) = TRBase BBool $ RKnown "b" $ PNeg (PVar "b")
+prim (CNBool True) = TRBase BBool $ RKnown (PVar binder)
+prim (CNBool False) = TRBase BBool $ RKnown $ PNeg (PVar binder)
 
 -- iprim(i) := int(v: v == i)
 iprim :: Int -> Type
-iprim = TRBase BInt . RKnown "v" . PInterpOp Equal (PVar "v") . PInt
+iprim = TRBase BInt . RKnown . PInterpOp Equal (PVar "v") . PInt
 
 -- oprim(op) := x:int -> (y:int -> int{v: v=x+y})
 oprim :: InterpOp -> Type
@@ -231,7 +237,7 @@ oprim Gt = mkOprim Gt
 mkOprim op =
   TDepFn "x" (base BInt) $
     TDepFn "y" (base BInt) $
-      TRBase (brt op) (RKnown "v" (PInterpOp Equal (PVar "v") (PInterpOp op (PVar "x") (PVar "y"))))
+      TRBase (brt op) (RKnown (PInterpOp Equal (PVar binder) (PInterpOp op (PVar "x") (PVar "y"))))
   where
     brt Add = BInt
     brt Sub = BInt
@@ -256,24 +262,21 @@ instance Subst Predicate where
   subst (PAnd p0 p1) v p = PAnd (subst p0 v p) (subst p1 v p)
   subst (POr p0 p1) v p = POr (subst p0 v p) (subst p1 v p)
   subst (PNeg p0) v p = PNeg (subst p0 v p)
-  -- subst (PIf p0 p1 p2) v p = PIf (subst p0 v p) (subst p1 v p) (subst p2 v p)
   subst (PUninterpFun f p1) v p = PUninterpFun f (subst p v p1)
+  subst x@(PHornApp h vs) _ _ = x -- this is... probably unsound?
 
 ------ shorthand: implication constraints
 cimp :: Variable -> Type -> Constraint -> Constraint
-cimp x (TRBase b (RKnown br p)) c = CFun x b (subst p v (PVar x)) c
-  where
-    v :: Variable
-    v = br
+cimp x (TRBase b (RKnown p)) c = CFun x b (subst p binder (PVar x)) c
 cimp _ _ c = c
 
 instance Subst Constraint where
   subst = undefined
 
 instance Subst Type where
-  subst t0@(TRBase b (RKnown v p)) y z
-    | v == y = t0
-    | otherwise = TRBase b (RKnown v (subst p y z))
+  subst t0@(TRBase b (RKnown p)) y z
+    | binder == y = t0
+    | otherwise = TRBase b (RKnown (subst p y z))
   subst (TDepFn x s t) y z
     | x == y = TDepFn x (subst s x z) t
     | otherwise = TDepFn x (subst s y z) (subst t y z)
@@ -288,16 +291,17 @@ substTyVar aFrom tTo (TForall tv k t)
   | otherwise = TForall tv k (substTyVar aFrom tTo t)
 
 -- Algorithmic subtyping
-sub :: Type -> Type -> Constraint
+sub :: Type -> Type -> Gen Constraint
 sub (TForall alpha1 k1 t1) (TForall alpha2 k2 t2)
   | k1 == k2 = sub t1 (substTyVar alpha2 (base (BTVar alpha1)) t2)
-sub (TRBase b0 (RKnown v1 p1)) (TRBase b1 (RKnown v2 p2))
-  | b0 == b1 = CFun v1 b0 p1 (CPred (subst p2 v2 (PVar v1)))
-sub (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) =
-  CAnd ci (cimp x2 s2 co)
-  where
-    ci = sub s2 s1
-    co = sub (subst t1 x1 (PVar x2)) t2
+sub (TRBase b0 (RKnown p1)) (TRBase b1 (RKnown p2))
+  | b0 == b1 = do
+      freshVar <- gensym
+      return $ CFun freshVar b0 p1 (CPred (subst p2 binder (PVar freshVar)))
+sub (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) = do
+  ci <- sub s2 s1
+  co <- sub (subst t1 x1 (PVar x2)) t2
+  return $ CAnd ci (cimp x2 s2 co)
 sub t1 t2 = trace ("sub of " ++ show t1 ++ " <: " ++ show t2 ++ " undefined") undefined
 
 -- Algorithmic state
@@ -393,23 +397,53 @@ check1 g e t = do
   -- traceM "[0/3 checksynth]"
   (c, s) <- synth g e
   -- traceM "[1/3 checksynth]"
-  let c1 = sub s t
+  c1 <- sub s t
   -- traceM "[2/3 checksynth]"
   return $ CAnd c c1
 
 -- Selfificaiton
 self :: Variable -> Type -> Type
-self x (TRBase b (RKnown v p)) = TRBase b (RKnown v (PAnd p (PInterpOp Equal (PVar v) (PVar x))))
+self x (TRBase b (RKnown p)) = TRBase b (RKnown (PAnd p (PInterpOp Equal (PVar binder) (PVar x))))
 self _ t = t
 
 -- Templating
+
+-- Generate fresh templates for the program
+template :: Context -> [Variable] -> Term -> Gen Term
+template p ctx (TConst k) = return (TConst k)
+template p ctx (TVar v) = return (TVar v)
+template p ctx (TLet v t1 t2) = do
+  t1' <- template p ctx t1
+  t2' <- template p (v : ctx) t2
+  return $ TLet v t1' t2'
+template p ctx (TLam v t) = do
+  t' <- template p (v : ctx) t
+  return $ TLam v t'
+template p ctx (TApp t v) = do
+  t' <- template p ctx t
+  return $ TApp t' v
+template p ctx (TAnn t ty) = do
+  ty' <- fresh p ty
+  t' <- template p ctx t
+  return $ TAnn t' ty'
+template p ctx (TCond v tt tf) = do
+  tt' <- template p ctx tt
+  tf' <- template p ctx tf
+  return $ TCond v tt' tf'
+template p ctx (TRec _ _ _ _) = do
+  error "letrec is unsupported"
+template p ctx (TTAbs v k t) = do
+  error "ttabs is unsupported"
+template p ctx (TTApp _ _) = do
+  error "ttappis unsupported"
+
 fresh :: Context -> Type -> Gen Type
 fresh g (TRBase b Hole) = do
   v <- gensym
   k <- gensym
   let freshKappa = HornVariable k b (bToList $ getRng (g ^. terms))
-  return $ TRBase b (RKnown v (PHornApp freshKappa (bToList $ getDom (g ^. terms))))
-fresh _ r@(TRBase _ (RKnown _ _)) = return r
+  return $ TRBase b (RKnown (PHornApp freshKappa (bToList $ getDom (g ^. terms))))
+fresh _ r@(TRBase _ (RKnown _)) = return r
 fresh g (TDepFn x s t) = do
   s' <- fresh g s
   t' <- fresh (terms %~ tblSet x s' $ g) t
@@ -446,8 +480,21 @@ tyckProgram p = foldl (\tsf fn -> tblSet fn (tyckF fn) tsf) (emptyTable Nothing)
     -- For now, no type variables ;)
     ctxTy = foldl (\csf fn -> tblSet fn (getTbl (p ^. decls) fn) csf) (emptyTable Nothing) (p ^. (decls . dom))
     gamma = Context ctxTy (emptyTable Nothing)
-    bods = p ^. bodies ^. dom
+    bods = p ^. (bodies . dom)
     tyckF fn = evalState (check gamma (getTbl (p ^. bodies) fn) (getTbl (p ^. decls) fn)) defaultState
+
+-- Typecheck all bodies in a program
+templateProgram :: Program -> Program
+templateProgram p = foldl (\tsf fn -> decls %~ tblSet fn (tmplT fn) $ tsf) p dcs
+  where
+    -- For now, no type variables ;)
+    ctxTy = foldl (\csf fn -> tblSet fn (getTbl (p ^. decls) fn) csf) (emptyTable Nothing) (p ^. (decls . dom))
+    gamma = Context ctxTy (emptyTable Nothing)
+    bods = p ^. (bodies . dom)
+    dcs = p ^. (decls . dom)
+    tmplF fn = evalState (template gamma [] (getTbl (p ^. bodies) fn)) defaultState
+    tmplT fn = evalState (fresh gamma (getTbl (p ^. decls) fn)) defaultState
+    bodiesTemplated = foldl (\tsf fn -> bodies %~ tblSet fn (tmplF fn) $ tsf) p bods
 
 ------ Tests
 
@@ -464,7 +511,7 @@ setupContext vBs aBs = g2
     g1 = foldl (\g (v, t) -> terms %~ tblSet v t $ g) g0 vBs
     g2 = foldl (\g (v, t) -> types %~ tblSet v t $ g) g1 aBs
 
-subTest :: Constraint
+subTest :: Gen Constraint
 subTest = sub example36Sub example36Sup
   where
     example36Sub :: Type
@@ -472,33 +519,33 @@ subTest = sub example36Sub example36Sup
       TDepFn
         "x"
         (base BInt)
-        (TRBase BInt (RKnown "y" (PInterpOp Equal (PVar "y") (PInterpOp Add (PVar "x") (PInt 1)))))
+        (TRBase BInt (RKnown (PInterpOp Equal (PVar binder) (PInterpOp Add (PVar "x") (PInt 1)))))
 
     example36Sup :: Type
     example36Sup =
       TDepFn
         "x"
-        (TRBase BInt (RKnown "x" (PInterpOp Leq (PInt 0) (PVar "x"))))
-        (TRBase BInt (RKnown "v" (PInterpOp Leq (PInt 0) (PVar "v"))))
+        (TRBase BInt (RKnown (PInterpOp Leq (PInt 0) (PVar "x"))))
+        (TRBase BInt (RKnown (PInterpOp Leq (PInt 0) (PVar binder))))
 
 nat :: Type
-nat = TRBase BInt (RKnown "n" (PInterpOp Leq (PInt 0) (PVar "n")))
+nat = TRBase BInt (RKnown (PInterpOp Leq (PInt 0) (PVar binder)))
 
 vcTest1 :: Constraint
 vcTest1 = testCheck gamma0 inc t0
   where
     gamma0 =
       Context
-        (tblSet "x" nat (tblSet "one" (TRBase BInt (RKnown "one" (PInterpOp Equal (PVar "one") (PInt 1)))) (emptyTable Nothing)))
+        (tblSet "x" nat (tblSet "one" (TRBase BInt (RKnown (PInterpOp Equal (PVar binder) (PInt 1)))) (emptyTable Nothing)))
         (emptyTable Nothing)
-    t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
+    t0 = TRBase BInt (RKnown (PInterpOp Lt (PVar "x") (PVar binder)))
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
 
 vcTest2 :: Constraint
 vcTest2 = testCheck gamma1 term1 t0
   where
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
-    t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
+    t0 = TRBase BInt (RKnown (PInterpOp Lt (PVar "x") (PVar binder)))
     gamma1 = Context (tblSet "x" nat (emptyTable Nothing)) (emptyTable Nothing)
     term1 = TLet "one" (TConst (CNInt 1)) inc
 
@@ -508,7 +555,7 @@ vcTest3 = testCheck (Context (emptyTable Nothing) (emptyTable Nothing)) term3 ty
     inc = TApp (TApp (TConst (CNOp Add)) "x") "one"
     term1 = TLet "one" (TConst (CNInt 1)) inc
     term3 = TLam "x" term1
-    t0 = TRBase BInt (RKnown "v" (PInterpOp Lt (PVar "x") (PVar "v")))
+    t0 = TRBase BInt (RKnown (PInterpOp Lt (PVar "x") (PVar binder)))
     typ3 = TDepFn "x" nat t0
 
 -- Example from 4.3.1
@@ -517,7 +564,7 @@ notTest = testCheck tbl term typ
   where
     tbl = Context (tblSet "x" (base BBool) (emptyTable Nothing)) (emptyTable Nothing)
     term = TCond "x" (TConst (CNBool True)) (TConst (CNBool False))
-    typ = TRBase BBool $ RKnown "b" (PInterpOp Equal (PVar "b") (PNeg (PVar "x")))
+    typ = TRBase BBool $ RKnown (PInterpOp Equal (PVar binder) (PNeg (PVar "x")))
 
 -- Another example from 4.3.1
 
@@ -526,10 +573,10 @@ sumTest = testCheck tbl term typ
   where
     ts =
       TRBase BInt $
-        RKnown "v" $
+        RKnown $
           PAnd
-            (PInterpOp Leq (PInt 0) (PVar "v"))
-            (PInterpOp Leq (PVar "n") (PVar "v"))
+            (PInterpOp Leq (PInt 0) (PVar binder))
+            (PInterpOp Leq (PVar "n") (PVar binder))
     tbl =
       Context
         ( tblSet "n" (base BInt) $
@@ -558,7 +605,7 @@ clientTest = testSynth g e0
           ("v_five", prim (CNInt 5)),
           ("v_one", prim (CNInt 1)),
           ("max", TForall "alpha" BaseKind (TDepFn "bv0" (base (BTVar "alpha")) (TDepFn "bv1" (base (BTVar "alpha")) (base (BTVar "alpha"))))),
-          ("add", TDepFn "x" (base BInt) (TRBase BInt (RKnown "y" (PInterpOp Equal (PVar "y") (PInterpOp Add (PVar "x") (PInt 1))))))
+          ("add", TDepFn "x" (base BInt) (TRBase BInt (RKnown (PInterpOp Equal (PVar binder) (PInterpOp Add (PVar "x") (PInt 1))))))
         ]
         []
     client =

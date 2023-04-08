@@ -8,7 +8,7 @@
 
 module Surface where
 
-import BasicChecker (BasicType (..), Constant (..), FnName, InterpOp (..), Predicate (..), Program, Refinement (..), Term (..), Type (..), Variable, bodies, decls, emptyProgram)
+import BasicChecker (BasicType (..), Constant (..), FnName, InterpOp (..), Predicate (..), Program, Refinement (..), Term (..), Type (..), Variable, binder, bodies, decls, emptyProgram)
 import Control.Lens (makeLenses, (%~), (^.))
 import qualified Control.Monad.State as ST
 import Util
@@ -53,25 +53,22 @@ _main = return
 
 -- | Type position
 bool :: Type
-bool = TRBase BBool (RKnown "unused" (PBool True))
+bool = TRBase BBool (RKnown (PBool True))
 
 int :: Type
-int = TRBase BInt (RKnown "unused" (PBool True))
+int = TRBase BInt (RKnown (PBool True))
 
 tyv :: TyVarName -> Type
-tyv v = TRBase (BTVar v) (RKnown "unused" (PBool True))
-
-fn :: Type -> Type -> Type
-fn = TDepFn "unused"
+tyv v = TRBase (BTVar v) (RKnown (PBool True))
 
 refn :: Variable -> Type -> Type -> Type
 refn = TDepFn
 
 -- refine a type
 -- disallow refinements of non-base types at parse time
-refine :: Type -> Variable -> Predicate -> Type
-refine (TRBase b (RKnown _ (PBool True))) v p = TRBase b (RKnown v p)
-refine _ _ _ = error "parse error: refinement type with nontrivial refinement"
+refine :: Type -> Predicate -> Type
+refine (TRBase b (RKnown (PBool True))) p = TRBase b (RKnown p)
+refine _ _ = error "parse error: refinement type with nontrivial refinement"
 
 hole :: Type -> Type
 hole (TRBase b _) = (TRBase b Hole)
@@ -145,106 +142,3 @@ gt = TConst $ CNOp Gt
 
 mkBinop :: Term -> Term -> Term -> Term
 mkBinop op a b = TLet "opA" a $ TLet "opB" b $ TApp (TApp op "opA") "opB"
-
--- | My "surface" syntax Srf
--- | A program is a list of declarations that ends in decl_main
-prog1 :: Program
-prog1 = parse $ do
-  _val "assert" $ fn (refine bool "b" (var' "b")) int
-  _let "assert" ["b"] $
-    integer 0
-
-  _val "not" $ refn "x" bool (refine bool "b" (eq' (var' "b") (neg' (var' "x"))))
-  _let "not" ["x"] $
-    cond
-      "x"
-      false
-      true
-
-  _val "and" $ refn "x" bool (refn "y" bool (refine bool "b" (eq' (var' "b") (and' (var' "x") (var' "y")))))
-  _let "and" ["x", "y"] $
-    cond
-      "x"
-      (var "y")
-      false
-
-  _val "or" $ refn "x" bool (refn "y" bool (refine bool "b" (eq' (var' "b") (or' (var' "x") (var' "y")))))
-  _let "or" ["x", "y"] $
-    cond
-      "x"
-      true
-      (var "y")
-
--- _val "abs" $ refn "x" int (refine int "v" (leq' (int' 0) (var' "v")))
--- _let "abs" ["x"] $
---   bind "c" todo $
---   cond "c"
---     todo
---     todo
-
-prog2 :: Program
-prog2 = parse $ do
-  _val "or" $ refn "x" bool (refn "y" bool (refine bool "b" (eq' (var' "b") (or' (var' "x") (var' "y")))))
-  _let "or" ["x", "y"] $
-    cond
-      "x"
-      true
-      (var "y")
-
-prog3 :: Program
-prog3 = parse $ do
-  _val "v" $ refine int "z" (eq' (var' "z") (int' 4))
-  _let "main" [] $
-    app (lam "x" (var "x")) "id"
-
-prog4 :: Program
-prog4 = parse $ do
-  _val "x" $ fn (tyv "'a") (tyv "'b")
-  -- _val "y" $ fn (tyv "'b") (tyv "'a")
-  -- _val "main" $ fn (tyv "'e") (tyv "'f")
-  _let "main" ["z"] $
-    cond "z" (var "x") (var "y")
-
-prog5 :: Program
-prog5 = parse $ do
-  _val "assert" $ refn "b" (refine bool "b" (var' "b")) int
-  -- _let "assert" ["b"] $ integer 0
-
-  _val "zero" $ refine int "v" (eq' (var' "v") (int' 0))
-
-  -- explicit version (no holes)
-  _val "abs" $ refn "x" int (refine int "v" (leq' (int' 0) (var' "v")))
-  _let "abs" ["x"] $
-    bind "c" (app (app leq "zero") "x") $
-      cond
-        "c"
-        (var "x")
-        (app (app sub "zero") "x")
-
-  _val "main" $ refn "y" int int
-  _let "main" ["y"] $
-    bind "z" (app (var "abs") "y") $
-      bind "c" (app (app leq "zero") "z") $
-        (app (var "assert") "c")
-
-prog6 :: Program
-prog6 = parse $ do
-  _val "assert" $ refn "b" (refine bool "b" (var' "b")) int
-  -- _let "assert" ["b"] $ integer 0
-
-  _val "zero" $ refine int "v" (eq' (var' "v") (int' 0))
-
-  -- explicit version (no holes)
-  _val "abs" $ refn "x" int (hole int)
-  _let "abs" ["x"] $
-    bind "c" (app (app leq "zero") "x") $
-      cond
-        "c"
-        (var "x")
-        (app (app sub "zero") "x")
-
-  _val "main" $ refn "y" int int
-  _let "main" ["y"] $
-    bind "z" (app (var "abs") "y") $
-      bind "c" (app (app leq "zero") "z") $
-        (app (var "assert") "c")
