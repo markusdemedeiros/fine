@@ -1,3 +1,7 @@
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
+{-# HLINT ignore "Redundant bracket" #-}
+{-# HLINT ignore "Redundant $" #-}
 module Main where
 
 import BasicChecker (Program, binder)
@@ -63,6 +67,7 @@ prog3 = parse $ do
 prog4 :: Program
 prog4 = parse $ do
   _val "x" $ refn "unused" (tyv "'a") (tyv "'b")
+  _val "y" $ refn "unused" bool int
   -- _val "y" $ fn (tyv "'b") (tyv "'a")
   -- _val "main" $ fn (tyv "'e") (tyv "'f")
   _let "main" ["z"] $

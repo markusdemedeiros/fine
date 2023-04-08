@@ -3,7 +3,7 @@
 {-# HLINT ignore "Use record patterns" #-}
 module HindleyMilner where
 
-import BasicChecker (BasicType (..), FnName, Kind (..), Program, Refinement (..), Term (..), Type (..), Variable, base, bodies, decls, prim)
+import BasicChecker (BasicType (..), FnName, Kind (..), Predicate (PBool), Program, Refinement (..), Term (..), Type (..), Variable, base, bodies, decls, prim)
 import Control.Lens (Bifunctor (bimap), over, (%~), (^.))
 import Control.Monad
 import qualified Control.Monad.State as ST
@@ -37,7 +37,13 @@ data UnifVar
   | Anon Int
   | FnArg FnName Int
   | FnVal FnName
-  deriving (Show, Eq)
+  deriving (Eq)
+
+instance Show UnifVar where
+  show (UnifAtom b) = show b
+  show (Anon i) = "tmp." ++ show i
+  show (FnArg name i) = name ++ ".arg." ++ show i
+  show (FnVal name) = name ++ ".val"
 
 data UnifType
   = UnifVar UnifVar
@@ -59,6 +65,12 @@ type Arity = Table FnName Int
 -- Global State for creating fresh variables across the program
 type ConstraintST = ST.State Int
 
+genunused :: ConstraintST String
+genunused = do
+  r <- ST.get
+  ST.put (r + 1)
+  return $ "unused." ++ show r
+
 genty :: ConstraintST String
 genty = do
   r <- ST.get
@@ -72,12 +84,18 @@ gensym = do
   return $ Anon r
 
 collectArity :: Program -> Arity
-collectArity p = def %~ const (Just 1) $ typeArity <$> p ^. decls
+collectArity p = foldl (\tsf bodynm -> tblSet bodynm (termArity (getTbl (p ^. bodies) bodynm)) tsf) typeTbl (bToList $ p ^. (bodies . dom))
   where
+    typeTbl = def %~ const (Just 1) $ typeArity <$> p ^. decls
+
     typeArity :: Type -> Int
     typeArity (TRBase {}) = 1
     typeArity (TDepFn _ _ t) = 1 + typeArity t
     typeArity (TForall {}) = error "illegal type quantifier in typeArity"
+
+    termArity :: Term -> Int
+    -- termArity (TLam _ t) = 1 + termArity t
+    termArity _ = 1
 
 -- Get the type associated to a named function
 declType :: Arity -> FnName -> UnifType
@@ -87,6 +105,13 @@ declType arity name = mkty 0 (getTbl arity name)
     mkty a n
       | a + 1 == n = UnifVar $ FnVal name
       | a + 1 < n = UnifFn (UnifVar (FnArg name a)) $ mkty (a + 1) n
+
+-- Get the list of all polymorphic type variables in order
+-- polyTyp :: Type -> [(BasicType, Maybe String)]
+-- polyTyp (TRBase _ _) f = mklist []
+-- polyTyp (TDepFn _ x y) =
+--   = TRBase BasicType Refinement
+--   | TDepFn Variable Type Type
 
 -- Convert a type into its base form
 eraseRefinements :: Type -> UnifType
@@ -102,7 +127,7 @@ type Gamma = Table Variable UnifType
 synTerm :: Arity -> FnName -> Term -> ConstraintST ([UnifConstraint], Term)
 synTerm a name term = do
   (tau, cs, trm1) <- j (emptyTable Nothing) term
-  return $ ((declType a name, tau) : cs, trm1)
+  return ((declType a name, tau) : cs, trm1)
   where
     -- Extends Algorithm J
     -- Does not implement let-polymorphism
@@ -113,13 +138,47 @@ synTerm a name term = do
     j g x@(TConst k) = return (eraseRefinements $ prim k, [], x)
     -- Variables:
     --    If v is free, return the declType.
+    --      1. Make fresh type variables according to the signature of the decltype
+    --      2. Rewrite the program so that it explicitly applies these signautres to the decltype
     --    If v is bound, lookup the type in the context.
     --    No new constraints in either case.
     j g x@(TVar v)
       | bContains v (g ^. dom) = return (getTbl g v, [], x)
-      | otherwise = error $ "unsupported global function " ++ v -- return (declType a v, [], x)
-      -- Let bindings:
-      --  For now, we're going to do this the same as lambda. No let-polymorphism.
+      | otherwise = do
+          freshTypeVariables <- generateVars (declType a v)
+          (ut, _, urm) <- applyGlobalType (reverse freshTypeVariables)
+          return (ut, [], urm)
+      where
+        -- Explicit type application with holes
+        -- Give it the list of generated temporary types for the decltyp in reverse order
+        -- Returns a list of fresh unification variables for a type, in order.
+        generateVars :: UnifType -> ConstraintST [String]
+        generateVars (UnifVar _) = do
+          tau <- genty
+          return [tau]
+        generateVars (UnifFn _ x) = do
+          tau <- genty
+          taur <- generateVars x
+          return (tau : taur)
+
+        -- Wraps a variable in some number of type applications (that number can't be zero)
+        -- It applies the last string in the innermost position
+        applyGlobalType :: [String] -> ConstraintST (UnifType, Type, Term)
+        -- Base case: Result type for global.
+        applyGlobalType [tau] = do
+          -- Local type
+          let tyLoc = UnifVar (UnifAtom (BTVar tau))
+          return (tyLoc, TRBase (BTVar tau) Hole, TTApp (TVar v) (TRBase (BTVar tau) Hole))
+        applyGlobalType (tau : ts) = do
+          tau <- genty
+          u <- genunused
+          let tyLoc = UnifVar (UnifAtom (BTVar tau))
+          rb <- applyGlobalType ts
+          let (bty, brealtype, btrm) = rb
+          let t' = TDepFn u (TRBase (BTVar tau) Hole) brealtype
+          return $ (UnifFn tyLoc bty, t', TTApp btrm (TRBase (BTVar tau) Hole))
+    -- Let bindings:
+    --  For now, we're going to do this the same as lambda. No let-polymorphism.
     j g (TLet x bound body) = do
       (te, ce, bound') <- j g bound
       (tb, cb, body') <- j (tblSet x te g) body
@@ -173,16 +232,54 @@ synTerm a name term = do
 synDecl :: Arity -> FnName -> Type -> [UnifConstraint]
 synDecl a name typ = [(eraseRefinements typ, declType a name)]
 
--- Get all of the type inference constraints for a program
+-- Get all the type inference constraints for a program due to dataflow
 constrain :: Program -> ([UnifConstraint], Program)
-constrain p = (declConstraints ++ bodyConstraints, finalProgram)
+constrain p = (bodyConstraints, finalProgram)
   where
     arity = collectArity p
-    declConstraints = concatMap (\nm -> synDecl arity nm (getTbl (p ^. decls) nm)) (p ^. decls . dom)
+    -- declConstraints = concatMap (\nm -> synDecl arity nm (getTbl (p ^. decls) nm)) (p ^. decls . dom)
     bodyConstraints = fst bodyResults
     finalProgram = bodies %~ const (snd bodyResults) $ p
 
     bodyResults = fst . flip ST.runState 0 $ foldM (\(csf, psf) nm -> synTerm arity nm (getTbl (p ^. bodies) nm) >>= (\(x, y) -> return (x ++ csf, tblSet nm y psf))) ([], p ^. bodies) (p ^. bodies . dom)
+
+explicitTypes :: Arity -> Program -> Program
+explicitTypes a p = decls %~ const newDecls $ p
+  where
+    newDecls = foldl (\declSF freeVar -> tblSet freeVar (generateType freeVar) declSF) (p ^. decls) toGenerateFor
+
+    -- List of global functions that need types generated for them
+    toGenerateFor = filter (\fn -> not (bContains fn (p ^. (decls . dom)))) (bToList $ bUnion freevars (p ^. (bodies . dom)))
+
+    -- Make a fully polymorphic type with unused type variables
+    generateType :: FnName -> Type
+    generateType f = g' 0 $ declType a f
+      where
+        g' :: Int -> UnifType -> Type
+        g' _ (UnifVar v) = TRBase (BTVar (f ++ ".poly." ++ show v)) (RKnown (PBool True))
+        g' i (UnifFn v1 v2) =
+          TDepFn
+            ("unused" ++ show i)
+            (TRBase (BTVar (f ++ ".poly." ++ show i)) (RKnown (PBool True)))
+            (g' (i + 1) v2)
+
+    freevars :: BSet FnName
+    freevars = foldl bUnion bEmpty (fmap (freeInTerm bEmpty) (bToList (getRng $ p ^. bodies)))
+
+    freeInTerm :: BSet String -> Term -> BSet FnName
+    freeInTerm bound (TConst _) = bEmpty
+    freeInTerm bound (TVar v)
+      | bContains v bound = bEmpty
+      | otherwise = bFromList [v]
+    freeInTerm bound (TLet x b body) =
+      bUnion (freeInTerm bound b) (freeInTerm (bInsert x bound) body)
+    freeInTerm bound (TLam x t) = freeInTerm (bInsert x bound) t
+    freeInTerm bound (TApp t _) = freeInTerm bound t
+    freeInTerm bound (TAnn t _) = freeInTerm bound t
+    freeInTerm bound (TCond _ t1 t2) = bUnion (freeInTerm bound t1) (freeInTerm bound t2)
+    freeInTerm bound (TRec _ _ _ _) = error "letrec unsupported in freeInterm"
+    freeInTerm bound (TTAbs _ _ t) = freeInTerm bound t
+    freeInTerm bound (TTApp t _) = freeInTerm bound t
 
 -- Helpful for debugging
 showConstraints :: Program -> IO ()
@@ -190,14 +287,9 @@ showConstraints p = mapM_ (putStrLn . pretty) (fst (constrain p))
   where
     pretty :: UnifConstraint -> String
     pretty (c0, c1) = pretty' c0 ++ " = " ++ pretty' c1 ++ ";"
-    pretty' (UnifVar uv) = pretty'' uv
-    pretty' (UnifFn (UnifVar uv) tr) = pretty'' uv ++ " -> " ++ pretty' tr
+    pretty' (UnifVar uv) = show uv
+    pretty' (UnifFn (UnifVar uv) tr) = show uv ++ " -> " ++ pretty' tr
     pretty' (UnifFn ta tr) = pretty' ta ++ " -> " ++ pretty' tr
-
-    pretty'' (UnifAtom b) = show b
-    pretty'' (Anon i) = "tmp." ++ show i
-    pretty'' (FnArg name i) = name ++ ".arg." ++ show i
-    pretty'' (FnVal name) = name ++ ".val"
 
 -- Indeterminate types, must be mapped from.
 data UVar
