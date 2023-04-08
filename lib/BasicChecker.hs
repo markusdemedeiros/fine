@@ -108,7 +108,6 @@ instance Show Predicate where
   show (PAnd p0 p1) = show p0 ++ " && " ++ show p1
   show (POr p0 p1) = show p0 ++ " || " ++ show p1
   show (PNeg p) = "!(" ++ show p ++ ")"
-  -- show (PIf pc pt pf) = "if " ++ show pc ++ " then " ++ show pt ++ " else " ++ show pf
   show (PUninterpFun v p) = v ++ "(" ++ show p ++ ")"
   show (PHornApp h vs) = show h ++ "(" ++ intercalate ", " vs ++ ")"
 

@@ -1,20 +1,21 @@
 module Refinements where
 
+import Util (Table)
 
--- | Constraint system for refinement types 
+-- | Constraint system for refinement types
 -- | Top-level program should produce this
 
 -- | simple uninterpreted type variables
 type Uninterp = String
 
 -- | complex uninterpreted types
-data Cu 
+data Cu
   = V Uninterp
   | F [Cu] Cu
 
 -- | types
 data Typ
-  = I Int 
+  = I Int
   | B Bool
   | C Cu
 
@@ -28,9 +29,9 @@ binder = "nu"
 type Env = [(Var, Typ)]
 
 -- | predicate expressions
-data Expr 
+data Expr
   = EV Var
-  | EN Int 
+  | EN Int
   | EA Expr Expr
   | EM Int Expr
   | EF Var [Expr]
@@ -51,7 +52,6 @@ data InterpOp
 --   | PNot Pred
 --   | PAnd Pred Pred
 --   | PImp Pred Pred
-
 data Pred
   = PVar Var
   | PBool Bool
@@ -64,24 +64,13 @@ data Pred
   | PUninterpFun Var Pred -- ??
   deriving (Eq)
 
-
--- | refinement variables
-
-type RefVar = String
-
 -- | refinements
-
-data Refinement 
+data Refinement
   = RP Pred
-  | RK RefVar
+  | RK String (Table Var RTyp)
 
 -- | refinement types
-
 data RTyp = RTyp Typ Refinement
 
 -- | refinement env
-
 type G = [(Var, RTyp)]
-
-
-

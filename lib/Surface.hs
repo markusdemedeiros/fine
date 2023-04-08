@@ -8,7 +8,7 @@
 
 module Surface where
 
-import BasicChecker (BasicType (..), Constant (..), FnName, InterpOp (..), Predicate (..), Program, Refinement (RKnown), Term (..), Type (..), Variable, bodies, decls, emptyProgram)
+import BasicChecker (BasicType (..), Constant (..), FnName, InterpOp (..), Predicate (..), Program, Refinement (..), Term (..), Type (..), Variable, bodies, decls, emptyProgram)
 import Control.Lens (makeLenses, (%~), (^.))
 import qualified Control.Monad.State as ST
 import Util
@@ -72,6 +72,9 @@ refn = TDepFn
 refine :: Type -> Variable -> Predicate -> Type
 refine (TRBase b (RKnown _ (PBool True))) v p = TRBase b (RKnown v p)
 refine _ _ _ = error "parse error: refinement type with nontrivial refinement"
+
+hole :: Type -> Type
+hole (TRBase b _) = (TRBase b Hole)
 
 -- | Predicate position
 var' :: Variable -> Predicate
@@ -211,6 +214,28 @@ prog5 = parse $ do
 
   -- explicit version (no holes)
   _val "abs" $ refn "x" int (refine int "v" (leq' (int' 0) (var' "v")))
+  _let "abs" ["x"] $
+    bind "c" (app (app leq "zero") "x") $
+      cond
+        "c"
+        (var "x")
+        (app (app sub "zero") "x")
+
+  _val "main" $ refn "y" int int
+  _let "main" ["y"] $
+    bind "z" (app (var "abs") "y") $
+      bind "c" (app (app leq "zero") "z") $
+        (app (var "assert") "c")
+
+prog6 :: Program
+prog6 = parse $ do
+  _val "assert" $ refn "b" (refine bool "b" (var' "b")) int
+  -- _let "assert" ["b"] $ integer 0
+
+  _val "zero" $ refine int "v" (eq' (var' "v") (int' 0))
+
+  -- explicit version (no holes)
+  _val "abs" $ refn "x" int (hole int)
   _let "abs" ["x"] $
     bind "c" (app (app leq "zero") "x") $
       cond
