@@ -12,9 +12,9 @@ import Surface
 main :: IO ()
 main = putStrLn "click https://www.youtube.com/watch?v=dQw4w9WgXcQ to access program (or enter DebugMode from the repl)"
 
+-- | All Srf functions must have a type! But not all types must have a term
 debug = debugMode
 
--- | Things that you can do to create srf programs
 prog1 :: Program
 prog1 = parse $ do
   _val "assert" $ refn "unused" (refine bool (var' binder)) int
@@ -70,6 +70,7 @@ prog4 = parse $ do
   _val "y" $ refn "unused" bool int
   -- _val "y" $ fn (tyv "'b") (tyv "'a")
   -- _val "main" $ fn (tyv "'e") (tyv "'f")
+  _val "main" $ refn "unused" bool (refn "unused'" bool int)
   _let "main" ["z"] $
     cond "z" (var "x") (var "y")
 
@@ -123,3 +124,11 @@ prog7 = parse $ do
   _let "succ" ["x"] $
     bind "one" (integer 1) $
       app (app add "one") "x"
+
+prog8 :: Program
+prog8 = parse $ do
+  _val "test" $ refn "unused" (tyv "a") (tyv "a")
+
+  _val "main" $ refn "unused" int bool
+  _let "main" [] $
+    var "test"

@@ -87,6 +87,13 @@ instance Functor (Table d) where
   fmap :: (a -> b) -> Table d a -> Table d b
   fmap f (Table dom m def) = Table dom (f . m) (fmap f def)
 
+depFmap :: (d -> a -> b) -> Table d a -> Table d b
+depFmap f (Table dom m Nothing) = Table dom (\d -> f d $ m d) Nothing
+depFmap _ _ = error "cannot apply value-dependent fmap to devault-valued table"
+
+restrictDomain :: Table d a -> Table d a
+restrictDomain (Table d m _) = Table d m Nothing
+
 instance (Show d, Show r) => Show (Table d r) where
   show t@(Table dom fun def) =
     "[ " ++ (drop 2 . reverse . drop 1 . reverse) (concatMap (\x -> "  (" ++ show x ++ " -> " ++ show (fun x) ++ ")\n") dom ++ ds) ++ "]"

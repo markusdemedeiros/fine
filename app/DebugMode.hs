@@ -1,7 +1,7 @@
 module DebugMode where
 
 import BasicChecker (Program)
-import HindleyMilner (collectArity, constrain, explicitTypes, preprocessVariables, showConstraints, unify)
+import HindleyMilner (collectArity, constrain, preprocessVariables, showConstraints, unify)
 import System.Process
 import Util (todo)
 
@@ -15,9 +15,8 @@ debugMode p = do
       msg "options"
       putStrLn " - (i)nput program"
       putStrLn " - function (a)rities"
-      putStrLn " - (c)onstraints due to terms (HM)"
-      putStrLn " - (e)xplicit type variables for each unannotated term and free variable (HM)"
-      putStrLn " - (u)nification (HM)"
+      putStrLn " - (c)onstraints (Hindley Milner)"
+      -- putStrLn " - (u)nification (HM)"
       putStrLn " - e(x)it"
       putStr "> "
       cmd <- getLine
@@ -26,8 +25,7 @@ debugMode p = do
         "i" -> srfProgram p >> doRepl
         "a" -> srfArity p >> doRepl
         "c" -> srfConstraints p >> doRepl
-        "e" -> srfExplicitTypes p >> doRepl
-        "u" -> srfUnify p >> doRepl
+        -- "u" -> srfUnify p >> doRepl
         "x" -> callCommand "cowsay I sure hope that fixes it!"
         _ -> callCommand "cowsay learn 2 read son" >> doRepl
 
@@ -47,28 +45,27 @@ srfArity p = do
   print $ collectArity p
   putStrLn ""
 
-srfExplicitTypes :: Program -> IO ()
-srfExplicitTypes p = do
-  msg "explicit type variables"
-  let a = collectArity p
-  print $ explicitTypes a p
-  putStrLn ""
+-- srfExplicitTypes :: Program -> IO ()
+-- srfExplicitTypes p = do
+--   msg "explicit type variables"
+--   let a = collectArity p
+--   print $ explicitTypes a p
+--   putStrLn ""
 
 srfConstraints :: Program -> IO ()
 srfConstraints p = do
-  let p' = explicitTypes (collectArity p) p
-  let newProgram = snd $ constrain p'
+  let (constraints, newProgram) = constrain p
   msg "rewritten program"
   print newProgram
   putStrLn ""
   msg "constraint system"
-  showConstraints p'
+  showConstraints constraints
   putStrLn ""
 
-srfUnify :: Program -> IO ()
-srfUnify p = do
-  let p' = explicitTypes (collectArity p) p
-  let (constraints, newProgram) = constrain p'
-  msg "unification map:"
-  print . unify . preprocessVariables $ constraints
-  putStrLn ""
+-- srfUnify :: Program -> IO ()
+-- srfUnify p = do
+--   let p' = explicitTypes (collectArity p) p
+--   let (constraints, newProgram) = constrain p'
+--   msg "unification map:"
+--   print . unify . preprocessVariables $ constraints
+--   putStrLn ""

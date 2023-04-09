@@ -121,13 +121,29 @@ eraseRefinements (TForall {}) = error "illegal type quantifier in erase refineme
 
 type Gamma = Table Variable UnifType
 
+explicateQuantifiers :: Type -> Term -> Term
+explicateQuantifiers (TForall alpha k t) trm = TTAbs alpha k (explicateQuantifiers t trm)
+explicateQuantifiers _ trm = trm
+
+-- Generate constraints that enforece that the inferred type is the same as the declared one
+-- Arguments:
+--    Inferred type at the top-level
+--    Declared type
+--    Map between declared polymorphic types and top-levl UnifVars
+enforceDecl :: UnifType -> Type -> [UnifConstraint]
+enforceDecl uty (TRBase b _) = [(uty, UnifVar . UnifAtom $ b)]
+enforceDecl uty (TForall _ _ t) = enforceDecl uty t
+enforceDecl (UnifFn t1 t2) (TDepFn _ ta tb) = enforceDecl t1 ta ++ enforceDecl t2 tb
+
 -- Get constraints for a single body
 -- Synthesize the entire most general type, and constrain it to be equal to (declType)
 -- When fresh variables are generated, we also rewrite the program with explicit annotations.
-synTerm :: Arity -> FnName -> Term -> ConstraintST ([UnifConstraint], Term)
+synTerm :: Table FnName Type -> FnName -> Term -> ConstraintST ([UnifConstraint], Term)
 synTerm a name term = do
-  (tau, cs, trm1) <- j (emptyTable Nothing) term
-  return ((declType a name, tau) : cs, trm1)
+  (tau, bodyConstraints, tbody) <- j (emptyTable Nothing) term
+  let declaredType = getTbl a name
+  let declConstraints = enforceDecl tau declaredType
+  return (declConstraints ++ bodyConstraints, explicateQuantifiers declaredType tbody)
   where
     -- Extends Algorithm J
     -- Does not implement let-polymorphism
@@ -144,39 +160,26 @@ synTerm a name term = do
     --    No new constraints in either case.
     j g x@(TVar v)
       | bContains v (g ^. dom) = return (getTbl g v, [], x)
-      | otherwise = do
-          freshTypeVariables <- generateVars (declType a v)
-          (ut, _, urm) <- applyGlobalType (reverse freshTypeVariables)
-          return (ut, [], urm)
+      | otherwise = globalAssignment (getTbl a v) (emptyTable Nothing) (TVar v)
       where
-        -- Explicit type application with holes
-        -- Give it the list of generated temporary types for the decltyp in reverse order
-        -- Returns a list of fresh unification variables for a type, in order.
-        generateVars :: UnifType -> ConstraintST [String]
-        generateVars (UnifVar _) = do
+        -- Recurse through the target type
+        --  - Each forall generates a new fresh type variables
+        --  - The final type substitutes all of those type variables in the declared type
+        --  - The final term has explicit applications at each level
+        --  - No constraints are generated
+        globalAssignment :: Type -> Table String String -> Term -> ConstraintST (UnifType, [UnifConstraint], Term)
+        globalAssignment (TForall alpha _ tInner) env trm = do
           tau <- genty
-          return [tau]
-        generateVars (UnifFn _ x) = do
-          tau <- genty
-          taur <- generateVars x
-          return (tau : taur)
+          globalAssignment tInner (tblSet alpha tau env) (TTApp trm (TRBase (BTVar tau) Hole))
+        globalAssignment tyOpen env trm = return (tySubst tyOpen env, [], trm)
 
-        -- Wraps a variable in some number of type applications (that number can't be zero)
-        -- It applies the last string in the innermost position
-        applyGlobalType :: [String] -> ConstraintST (UnifType, Type, Term)
-        -- Base case: Result type for global.
-        applyGlobalType [tau] = do
-          -- Local type
-          let tyLoc = UnifVar (UnifAtom (BTVar tau))
-          return (tyLoc, TRBase (BTVar tau) Hole, TTApp (TVar v) (TRBase (BTVar tau) Hole))
-        applyGlobalType (tau : ts) = do
-          tau <- genty
-          u <- genunused
-          let tyLoc = UnifVar (UnifAtom (BTVar tau))
-          rb <- applyGlobalType ts
-          let (bty, brealtype, btrm) = rb
-          let t' = TDepFn u (TRBase (BTVar tau) Hole) brealtype
-          return $ (UnifFn tyLoc bty, t', TTApp btrm (TRBase (BTVar tau) Hole))
+        -- Assumes the type has no quantification left in it
+        -- Replace closed-over type variables with the newly generated ones
+        tySubst :: Type -> Table String String -> UnifType
+        tySubst (TRBase (BTVar v) _) env = UnifVar . UnifAtom . BTVar $ getTbl env v
+        tySubst (TRBase BInt _) env = UnifVar . UnifAtom $ BInt
+        tySubst (TRBase BBool _) env = UnifVar . UnifAtom $ BBool
+        tySubst (TDepFn _ t1 t2) env = UnifFn (tySubst t1 env) (tySubst t2 env)
     -- Let bindings:
     --  For now, we're going to do this the same as lambda. No let-polymorphism.
     j g (TLet x bound body) = do
@@ -228,20 +231,17 @@ synTerm a name term = do
     j g (TRec v bound ty body) = error "letrec unimplemented in algorithm j"
     j _ _ = error "unhandled case in algorithm j"
 
--- Get constraints for a single function declaration
-synDecl :: Arity -> FnName -> Type -> [UnifConstraint]
-synDecl a name typ = [(eraseRefinements typ, declType a name)]
-
 -- Get all the type inference constraints for a program due to dataflow
-constrain :: Program -> ([UnifConstraint], Program)
-constrain p = (bodyConstraints, finalProgram)
+constrain :: Program -> (Table FnName [UnifConstraint], Program)
+constrain p = (constraintTable, rewrittenProgram)
   where
-    arity = collectArity p
-    -- declConstraints = concatMap (\nm -> synDecl arity nm (getTbl (p ^. decls) nm)) (p ^. decls . dom)
-    bodyConstraints = fst bodyResults
-    finalProgram = bodies %~ const (snd bodyResults) $ p
+    closedTypes = closeTypes p
+    (constraintTable, bodyTable) = fst . flip ST.runState 0 $ foldM (\(csf, psf) nm -> synTerm closedTypes nm (getTbl (p ^. bodies) nm) >>= (\(x, y) -> return (tblSet nm x csf, tblSet nm y psf))) (emptyTable Nothing, p ^. bodies) (p ^. bodies . dom)
+    rewrittenProgram = bodies %~ depFmap (\fn _ -> getTbl bodyTable fn) $ p
 
-    bodyResults = fst . flip ST.runState 0 $ foldM (\(csf, psf) nm -> synTerm arity nm (getTbl (p ^. bodies) nm) >>= (\(x, y) -> return (x ++ csf, tblSet nm y psf))) ([], p ^. bodies) (p ^. bodies . dom)
+-- bodyConstraints = fst bodyResults
+-- finalProgram = bodies %~ const (snd bodyResults) $ p
+-- bodyResults = fst . flip ST.runState 0 $ foldM (\(csf, psf) nm -> synTerm (p ^. decls) nm (getTbl (p ^. bodies) nm) >>= (\(x, y) -> return (tblSet nm x csf, tblSet nm y psf))) (emptyTable Nothing, p ^. bodies) (p ^. bodies . dom)
 
 explicitTypes :: Arity -> Program -> Program
 explicitTypes a p = decls %~ const newDecls $ p
@@ -282,9 +282,12 @@ explicitTypes a p = decls %~ const newDecls $ p
     freeInTerm bound (TTApp t _) = freeInTerm bound t
 
 -- Helpful for debugging
-showConstraints :: Program -> IO ()
-showConstraints p = mapM_ (putStrLn . pretty) (fst (constrain p))
+showConstraints :: Table FnName [UnifConstraint] -> IO ()
+showConstraints ctable = mapM_ (\fn -> putStrLn (" -- " ++ fn ++ ": ") >> mapM_ (putStrLn . pretty) (getTbl ctable fn)) (bToList $ ctable ^. dom)
   where
+    -- (fmap pretty) (fst $ constrain p)
+
+    -- mapM_ (putStrLn . pretty) (fst (constrain p))
     pretty :: UnifConstraint -> String
     pretty (c0, c1) = pretty' c0 ++ " = " ++ pretty' c1 ++ ";"
     pretty' (UnifVar uv) = show uv
@@ -420,8 +423,8 @@ subTerm s (TCond v t1 t2) = TCond v (subTerm s t1) (subTerm s t2)
 subTerm s (TRec v t1 ty t2) = TRec v (subTerm s t1) (subTyp s ty) (subTerm s t2)
 subTerm s t = t
 
-showUnify :: Program -> IO ()
-showUnify = print . unify . preprocessVariables . fst . constrain
+-- showUnify :: Program -> IO ()
+-- showUnify = print . unify . preprocessVariables . fst . constrain
 
 explicitSigs :: Subst -> Program -> Program
 explicitSigs s p = decls %~ const newdtbl $ p
@@ -483,8 +486,19 @@ rewriteTerms = error "rewrite terms unimplemented"
 --  DONE 2. Add explicit forall's to all function signatures
 --       2.1. Add explicit term-level type abstraction at the start of functiona
 --  DONE 2.2. Add explicit term-level type applications at call sites (with holes)
-rewrite :: Program -> Arity -> Subst -> Program
-rewrite = todo
 
 infer :: Program -> Program
 infer = todo
+
+-- We assume all functions have a type declaration
+-- Give us a set of new types
+closeTypes :: Program -> Table FnName Type
+closeTypes p = (\ty -> closeType (bToList $ freeTypeVariables ty) ty) <$> (p ^. decls)
+
+closeType :: [String] -> Type -> Type
+closeType tys t = foldr (`TForall` BaseKind) t tys
+
+freeTypeVariables :: Type -> BSet String
+freeTypeVariables (TRBase (BTVar alpha) _) = bFromList [alpha]
+freeTypeVariables (TRBase _ _) = bFromList []
+freeTypeVariables (TDepFn _ t1 t2) = bUnion (freeTypeVariables t1) (freeTypeVariables t2)
