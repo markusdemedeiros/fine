@@ -1,49 +1,57 @@
 module DebugMode where
 
-import BasicChecker (Program)
-import HindleyMilner (collectArity, constrain, preprocessVariables, showConstraints, unify)
+import BasicChecker (FnName, Program)
+import HindleyMilner (Subst, UnifConstraint, collectArity, constrain, preprocessVariables, rewriteTerms, showConstraints, unify)
 import System.Process
-import Util (todo)
+import Util (Table, bToList, getRng, todo)
+
+data DebugState = DebugState {_working :: Program, _constraints :: Table FnName [UnifConstraint], _subst :: Subst, _imp :: Program}
 
 debugMode :: Program -> IO ()
 debugMode p = do
   callCommand "cowsay I wonder what stupid thing you did this time"
-  srfProgram p
-  doRepl
+  let state = DebugState p (error "HM constraints not generated") (error "subst not generated") (error "imp program not generated")
+  srfProgram state >>= doRepl
+  return ()
   where
-    doRepl = do
+    doRepl :: DebugState -> IO DebugState
+    doRepl s = do
       msg "options"
-      putStrLn " - (i)nput program"
-      putStrLn " - function (a)rities"
+      putStrLn " - (w)orking program"
+      putStrLn " - function a(r)ities"
       putStrLn " - (c)onstraints (Hindley Milner)"
-      -- putStrLn " - (u)nification (HM)"
+      putStrLn " - (u)nification (Hindley Milner)"
+      putStrLn " - (a)pply subst (Hindley Milner)"
       putStrLn " - e(x)it"
       putStr "> "
       cmd <- getLine
       putStrLn ""
       case cmd of
-        "i" -> srfProgram p >> doRepl
-        "a" -> srfArity p >> doRepl
-        "c" -> srfConstraints p >> doRepl
-        -- "u" -> srfUnify p >> doRepl
-        "x" -> callCommand "cowsay I sure hope that fixes it!"
-        _ -> callCommand "cowsay learn 2 read son" >> doRepl
+        "w" -> srfProgram s >>= doRepl
+        "r" -> srfArity s >>= doRepl
+        "c" -> srfConstraints s >>= doRepl
+        "u" -> srfUnify s >>= doRepl
+        "a" -> srfApplySubst s >>= doRepl
+        "x" -> callCommand "cowsay I sure hope that fixes it!" >> doRepl s
+        _ -> callCommand "cowsay learn 2 read son" >> doRepl s
 
 msg :: String -> IO ()
 msg s = do
   putStrLn (" ========== [ " ++ s ++ " ] ========== ")
 
-srfProgram :: Program -> IO ()
+srfProgram :: DebugState -> IO DebugState
 srfProgram p = do
   msg "program"
-  print p
+  print (_working p)
   putStrLn ""
+  return p
 
-srfArity :: Program -> IO ()
+srfArity :: DebugState -> IO DebugState
 srfArity p = do
   msg "arity map"
-  print $ collectArity p
+  print $ collectArity (_working p)
   putStrLn ""
+  return p
 
 -- srfExplicitTypes :: Program -> IO ()
 -- srfExplicitTypes p = do
@@ -52,20 +60,29 @@ srfArity p = do
 --   print $ explicitTypes a p
 --   putStrLn ""
 
-srfConstraints :: Program -> IO ()
+srfConstraints :: DebugState -> IO DebugState
 srfConstraints p = do
-  let (constraints, newProgram) = constrain p
+  let (constraints, newProgram) = constrain (_working p)
   msg "rewritten program"
   print newProgram
   putStrLn ""
   msg "constraint system"
   showConstraints constraints
   putStrLn ""
+  return $ p {_working = newProgram, _constraints = constraints}
 
--- srfUnify :: Program -> IO ()
--- srfUnify p = do
---   let p' = explicitTypes (collectArity p) p
---   let (constraints, newProgram) = constrain p'
---   msg "unification map:"
---   print . unify . preprocessVariables $ constraints
---   putStrLn ""
+srfUnify :: DebugState -> IO DebugState
+srfUnify p = do
+  msg "unification map:"
+  let u = unify . preprocessVariables . concat . bToList . getRng . _constraints $ p
+  print u
+  putStrLn ""
+  return p {_subst = u}
+
+srfApplySubst :: DebugState -> IO DebugState
+srfApplySubst p = do
+  let newProgram = rewriteTerms (_subst p) (_working p)
+  msg "rewritten program"
+  print newProgram
+  putStrLn ""
+  return p {_working = newProgram}
