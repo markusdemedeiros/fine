@@ -488,6 +488,7 @@ self _ t = t
 -- Templating
 
 -- Generate fresh templates for the program
+-- ctx is the scope for all of the variables so far... but I don't think we reflect those into the templates do we?
 template :: Context -> [Variable] -> Term -> Gen Term
 template p ctx (TConst k) = return (TConst k)
 template p ctx (TVar v) = return (TVar v)
@@ -502,7 +503,7 @@ template p ctx (TApp t v) = do
   t' <- template p ctx t
   return $ TApp t' v
 template p ctx (TAnn t ty) = do
-  ty' <- fresh p ty
+  ty' <- fresh emptyContext ty
   t' <- template p ctx t
   return $ TAnn t' ty'
 template p ctx (TCond v tt tf) = do
@@ -513,8 +514,12 @@ template p ctx (TRec _ _ _ _) = do
   error "letrec is unsupported"
 template p ctx (TTAbs v k t) = do
   error "ttabs is unsupported"
-template p ctx (TTApp _ _) = do
-  error "ttappis unsupported"
+template p ctx (TTApp t ty) = do
+  ty' <- fresh emptyContext ty
+  t' <- template p ctx t
+  return $ TTApp t' ty'
+
+emptyContext = Context (emptyTable Nothing) (emptyTable Nothing)
 
 fresh :: Context -> Type -> Gen Type
 fresh g (TRBase b Hole) = do
@@ -523,6 +528,9 @@ fresh g (TRBase b Hole) = do
   let freshKappa = HornVariable k b (bToList $ getRng (g ^. terms))
   return $ TRBase b (RKnown (PHornApp freshKappa (bToList $ getDom (g ^. terms))))
 fresh _ r@(TRBase _ (RKnown _)) = return r
+fresh g (TForall tv k ty) = do
+  x <- fresh g ty
+  return (TForall tv k x)
 fresh g (TDepFn x s t) = do
   s' <- fresh g s
   t' <- fresh (terms %~ tblSet x s' $ g) t
@@ -562,18 +570,18 @@ tyckProgram p = foldl (\tsf fn -> tblSet fn (tyckF fn) tsf) (emptyTable Nothing)
     bods = p ^. (bodies . dom)
     tyckF fn = evalState (check gamma (getTbl (p ^. bodies) fn) (getTbl (p ^. decls) fn)) defaultState
 
--- Typecheck all bodies in a program
+-- Template all bodies in a program
 templateProgram :: Program -> Program
-templateProgram p = foldl (\tsf fn -> decls %~ tblSet fn (tmplT fn) $ tsf) p dcs
+templateProgram p = allTemplated
   where
-    -- For now, no type variables ;)
     ctxTy = foldl (\csf fn -> tblSet fn (getTbl (p ^. decls) fn) csf) (emptyTable Nothing) (p ^. (decls . dom))
     gamma = Context ctxTy (emptyTable Nothing)
     bods = p ^. (bodies . dom)
     dcs = p ^. (decls . dom)
     tmplF fn = evalState (template gamma [] (getTbl (p ^. bodies) fn)) defaultState
-    tmplT fn = evalState (fresh gamma (getTbl (p ^. decls) fn)) defaultState
+    tmplT fn = evalState (fresh emptyContext (getTbl (p ^. decls) fn)) defaultState
     bodiesTemplated = foldl (\tsf fn -> bodies %~ tblSet fn (tmplF fn) $ tsf) p bods
+    allTemplated = foldl (\tsf fn -> decls %~ tblSet fn (tmplT fn) $ tsf) bodiesTemplated dcs
 
 ------ Tests
 

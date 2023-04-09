@@ -1,6 +1,6 @@
 module DebugMode where
 
-import BasicChecker (FnName, Program)
+import BasicChecker (FnName, Program, templateProgram)
 import HindleyMilner (Subst, UnifConstraint, collectArity, constrain, preprocessVariables, rewriteTerms, showConstraints, unify)
 import System.Process
 import Util (Table, bToList, getRng, todo)
@@ -22,6 +22,7 @@ debugMode p = do
       putStrLn " - (c)onstraints (Hindley Milner)"
       putStrLn " - (u)nification (Hindley Milner)"
       putStrLn " - (a)pply subst (Hindley Milner)"
+      putStrLn " - (t)emplate holes (Refinement Inference)"
       putStrLn " - e(x)it"
       putStr "> "
       cmd <- getLine
@@ -32,6 +33,7 @@ debugMode p = do
         "c" -> srfConstraints s >>= doRepl
         "u" -> srfUnify s >>= doRepl
         "a" -> srfApplySubst s >>= doRepl
+        "t" -> srfTemplate s >>= doRepl
         "x" -> callCommand "cowsay I sure hope that fixes it!" >> return s
         _ -> callCommand "cowsay learn 2 read son" >> doRepl s
 
@@ -83,6 +85,14 @@ srfApplySubst :: DebugState -> IO DebugState
 srfApplySubst p = do
   let newProgram = rewriteTerms (_subst p) (_working p)
   msg "rewritten program"
+  print newProgram
+  putStrLn ""
+  return p {_working = newProgram}
+
+srfTemplate :: DebugState -> IO DebugState
+srfTemplate p = do
+  let newProgram = templateProgram (_working p)
+  msg "templated program"
   print newProgram
   putStrLn ""
   return p {_working = newProgram}

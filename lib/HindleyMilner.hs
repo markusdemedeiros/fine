@@ -498,7 +498,9 @@ rewriteTerms s p = p {_bodies = rewrittenBodies}
         -- This is where we need to insert the explicit kappa?
 
         sf :: Subst -> [String] -> Int -> SubstR -> (Type, Int)
-        sf s' scope' j Self = (TRBase (BTVar v) r, j)
+        -- Is refining this case allowed? I think we're not allowed to refine variables, right? So these should be trivial refinements
+        sf s' scope' j Self =
+          (TRBase (BTVar v) (RKnown (PBool True)), j)
         sf s' scope' j (Type (UVar (UserVar uv))) = (TRBase (BTVar uv) r, j)
         sf s' scope' j (Type (UConc UBool)) = (TRBase BBool r, j)
         sf s' scope' j (Type (UConc UInt)) = (TRBase BInt r, j)
