@@ -233,11 +233,12 @@ synTerm a name term = do
 
 -- Get all the type inference constraints for a program due to dataflow
 constrain :: Program -> (Table FnName [UnifConstraint], Program)
-constrain p = (constraintTable, rewrittenProgram)
+constrain p = (constraintTable, rewrittenProgram')
   where
     closedTypes = closeTypes p
     (constraintTable, bodyTable) = fst . flip ST.runState 0 $ foldM (\(csf, psf) nm -> synTerm closedTypes nm (getTbl (p ^. bodies) nm) >>= (\(x, y) -> return (tblSet nm x csf, tblSet nm y psf))) (emptyTable Nothing, p ^. bodies) (p ^. bodies . dom)
     rewrittenProgram = bodies %~ depFmap (\fn _ -> getTbl bodyTable fn) $ p
+    rewrittenProgram' = decls %~ depFmap (\fn _ -> getTbl closedTypes fn) $ rewrittenProgram
 
 -- bodyConstraints = fst bodyResults
 -- finalProgram = bodies %~ const (snd bodyResults) $ p

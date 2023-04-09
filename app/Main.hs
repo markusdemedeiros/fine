@@ -67,6 +67,7 @@ prog3 = parse $ do
 prog4 :: Program
 prog4 = parse $ do
   _val "x" $ refn "unused" (tyv "'a") (tyv "'b")
+  _let "x" ["vv"] $ (var "vv")
   _val "y" $ refn "unused" bool int
   -- _val "y" $ fn (tyv "'b") (tyv "'a")
   -- _val "main" $ fn (tyv "'e") (tyv "'f")
