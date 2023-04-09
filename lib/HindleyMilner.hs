@@ -3,7 +3,7 @@
 {-# HLINT ignore "Use record patterns" #-}
 module HindleyMilner where
 
-import BasicChecker (BasicType (..), FnName, Kind (..), Predicate (PBool), Program, Refinement (..), Term (..), Type (..), Variable, base, bodies, decls, prim)
+import BasicChecker (BasicType (..), FnName, Gen, Kind (..), Predicate (PBool), Program (..), Refinement (..), Term (..), Type (..), Variable, base, bodies, decls, defaultState, prim)
 import Control.Lens (Bifunctor (bimap), over, (%~), (^.))
 import Control.Monad
 import qualified Control.Monad.State as ST
@@ -355,7 +355,7 @@ unify = unify' (emptyTable $ Just Self)
     unify1 :: Subst -> (UTy, UTy) -> Subst
     -- Constants unify when they are equal
     unify1 tb (UConc c1, UConc c2)
-      | c1 == c1 = tb
+      | c1 == c2 = tb
       | otherwise = error "unify failed; inconsistent concrete types"
     -- Functions unify to other functions if their subterms do
     unify1 tb (UFn a1 b1, UFn a2 b2) = unify1 (unify1 tb (a1, a2)) (b1, b2)
@@ -454,42 +454,69 @@ tyQuant (TRBase (BTVar v) _) = [v]
 tyQuant (TDepFn _ t0 t1) = nub $ tyQuant t0 ++ tyQuant t1
 tyQuant _ = []
 
+-- So should we just add holes here or do we also generate refinement variables?
 rewriteTerms :: Subst -> Program -> Program
-rewriteTerms = error "rewrite terms unimplemented"
+rewriteTerms s p = p {_bodies = rewrittenBodies}
   where
-    -- uh oh... how to we do the explicit type application?
-    -- We hav e the function type written down
+    -- holy shit man just use a monad PLEASE I fucking BEG YOu
+    rewrittenBodies :: Table FnName Term
+    rewrittenBodies = fst $ foldl (\(tsf, i) fn -> let (t', i') = rewriteTerm s [] i (getTbl (p ^. bodies) fn) in (tblSet fn t' tsf, i')) ((emptyTable Nothing), 0) (bToList (p ^. (bodies . dom)))
 
-    rewriteTerm :: Subst -> Term -> Term
-    rewriteTerm s k@(TConst _) = k
-    rewriteTerm s v@(TVar _) = v
-    rewriteTerm s (TLet v t1 t2) = TLet v (rewriteTerm s t1) (rewriteTerm s t2)
-    rewriteTerm s (TLam v t) = TLam v (rewriteTerm s t)
-    rewriteTerm s (TApp (TAnn t barety) v) = TApp (mk bare real t) v
+    rewriteTerm :: Subst -> [String] -> Int -> Term -> (Term, Int)
+    rewriteTerm s scope i k@(TConst _) = (k, i)
+    rewriteTerm s scope i v@(TVar _) = (v, i)
+    rewriteTerm s scope i (TLet v t1 t2) =
+      let (t1', i') = rewriteTerm s scope i t1
+          (t2', i'') = rewriteTerm s scope i' t2 -- Do we reflect let-bound variables v into the logic?
+       in (TLet v t1' t2', i'')
+    rewriteTerm s scope i (TLam v t) =
+      let (t', i') = rewriteTerm s scope i t -- Do we reflect lambda-bound variables v into the logic?
+       in (TLam v t', i')
+    rewriteTerm s scope i (TApp t1 v) =
+      let (t1', i') = rewriteTerm s scope i t1
+       in (TApp t1' v, i')
+    rewriteTerm s scope i (TAnn t ty) =
+      let (t', i') = rewriteTerm s scope i t
+          (ty', i'') = rewriteType s scope i' ty
+       in (TAnn t' ty', i'')
+    rewriteTerm s scope i (TCond v t1 t2) =
+      let (t1', i') = rewriteTerm s scope i t1
+          (t2', i'') = rewriteTerm s scope i' t2
+       in (TCond v t1' t2', i'')
+    rewriteTerm s scope i (TRec v t1 ty t2) = error "letrec is unsupported"
+    rewriteTerm s scope i (TTAbs v k t) =
+      let (t', i') = rewriteTerm (tblSet (UserVar v) Self s) scope i t
+       in (TTAbs v k t', i')
+    rewriteTerm s scope i (TTApp t ty) =
+      let (t', i') = rewriteTerm s scope i t
+          (ty', i'') = rewriteType s scope i' ty
+       in (TTApp t' ty', i'')
+
+    rewriteType :: Subst -> [String] -> Int -> Type -> (Type, Int)
+    rewriteType s scope i (TRBase (BTVar v) r) = sf s scope i (getTbl s (UserVar v))
       where
-        bare = subTyp s bare
-        -- Get the real type for this function call
-        real = todo
-        -- (if it's at a top-level definition only!)
-        -- Make a type application sequence that meets the requirements of the real type
-        -- Insert holes, too.
-        -- (otherwise, just do nothing. It ain't polymorphic.  )
-        mk :: Type -> Type -> Term -> Term
-        mk annTyp realTyp t0 = todo
-    rewriteTerm s (TAnn t ty) = TAnn (rewriteTerm s t) (subTyp s ty)
-    rewriteTerm s (TCond v tt tf) = TCond v (rewriteTerm s tt) (rewriteTerm s tf)
-    rewriteTerm s (TRec v t1 ty t2) = error "letrec is unsupported"
+        -- This is where we need to insert the explicit kappa?
 
--- Rewrite the program to
--- todo: infer all free variables too!
---  DONE 0. Add extra annotations for the functions without type signautures
---  DONE 1. Apply the subtitutions to all type signatures and bodies
---  DONE 2. Add explicit forall's to all function signatures
---       2.1. Add explicit term-level type abstraction at the start of functiona
---  DONE 2.2. Add explicit term-level type applications at call sites (with holes)
-
-infer :: Program -> Program
-infer = todo
+        sf :: Subst -> [String] -> Int -> SubstR -> (Type, Int)
+        sf s' scope' j Self = (TRBase (BTVar v) r, j)
+        sf s' scope' j (Type (UVar (UserVar uv))) = (TRBase (BTVar uv) r, j)
+        sf s' scope' j (Type (UConc UBool)) = (TRBase BBool r, j)
+        sf s' scope' j (Type (UConc UInt)) = (TRBase BInt r, j)
+        sf s' scope' j (Type (UFn uty1 uty2)) =
+          let i' = j + 1
+              newDVar = "rewritevar." ++ show j
+              (uty1', i'') = sf s' scope i' (Type uty1)
+              (uty2', i''') = sf s' (newDVar : scope) i'' (Type uty2)
+           in (TDepFn newDVar uty1' uty2', i''')
+        sf s' scope' j (Type (UVar v')) = error "ambiguous type in final rewrite?"
+    rewriteType s scope i (TRBase b r) = (TRBase b r, i) -- Do we do anything to r here?
+    rewriteType s scope i (TDepFn v t1 t2) =
+      let (t1', i') = rewriteType s scope i t1
+          (t2', i'') = rewriteType s scope i' t2
+       in (TDepFn v t1' t2', i'')
+    rewriteType s scope i (TForall v k t) =
+      let (t', i') = rewriteType (tblSet (UserVar v) Self s) scope i t
+       in (TForall v k t', i')
 
 -- We assume all functions have a type declaration
 -- Give us a set of new types

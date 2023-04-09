@@ -9,7 +9,7 @@ data DebugState = DebugState {_working :: Program, _constraints :: Table FnName 
 
 debugMode :: Program -> IO ()
 debugMode p = do
-  callCommand "cowsay I wonder what stupid thing you did this time"
+  callCommand "cowsay what did you break this time"
   let state = DebugState p (error "HM constraints not generated") (error "subst not generated") (error "imp program not generated")
   srfProgram state >>= doRepl
   return ()
@@ -32,7 +32,7 @@ debugMode p = do
         "c" -> srfConstraints s >>= doRepl
         "u" -> srfUnify s >>= doRepl
         "a" -> srfApplySubst s >>= doRepl
-        "x" -> callCommand "cowsay I sure hope that fixes it!" >> doRepl s
+        "x" -> callCommand "cowsay I sure hope that fixes it!" >> return s
         _ -> callCommand "cowsay learn 2 read son" >> doRepl s
 
 msg :: String -> IO ()

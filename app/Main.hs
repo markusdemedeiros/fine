@@ -130,6 +130,6 @@ prog8 :: Program
 prog8 = parse $ do
   _val "test" $ refn "unused" (tyv "a") (tyv "a")
 
-  _val "main" $ refn "unused" int bool
+  _val "main" $ refn "unused" int int
   _let "main" [] $
     var "test"
