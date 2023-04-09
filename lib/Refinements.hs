@@ -74,3 +74,6 @@ data RTyp = RTyp Typ Refinement
 
 -- | refinement env
 type G = [(Var, RTyp)]
+
+-- | subtype constraint
+data SubC = SubC G RTyp RTyp

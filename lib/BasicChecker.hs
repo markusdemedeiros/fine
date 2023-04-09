@@ -11,6 +11,7 @@ import Control.Monad.State
 import Data.Functor ((<&>))
 import Data.List (intercalate)
 import Debug.Trace (trace, traceM)
+import Refinements (RTyp, SubC (..), Var)
 import Util
 
 -- Syntax for STLC with QF-UFLIA
@@ -290,7 +291,31 @@ substTyVar aFrom tTo (TForall tv k t)
   | tv == aFrom = TForall tv k t
   | otherwise = TForall tv k (substTyVar aFrom tTo t)
 
--- Algorithmic subtyping
+-- Algorithmic subtyping: Generate Imp Constraints
+subKappa :: Type -> Type -> Gen [SubC]
+subKappa (TForall alpha1 k1 t1) (TForall alpha2 k2 t2)
+  -- Type abstraction: Replace the type variables and enter
+  | k1 == k2 = subKappa t1 (substTyVar alpha2 (base (BTVar alpha1)) t2)
+subKappa x@(TRBase b0 (RKnown p1)) y@(TRBase b1 (RKnown p2))
+  | b0 == b1 = do
+      freshVar <- gensym
+      return [SubC [] (coerceRTyp x) (coerceRTyp y)]
+subKappa (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) = do
+  ci <- subKappa s2 s1
+  co <- subKappa (subst t1 x1 (PVar x2)) t2
+  return $ ci ++ cimpKappa x2 (coerceRTyp s2) co
+subKappa t1 t2 = trace ("sub of " ++ show t1 ++ " <: " ++ show t2 ++ " undefined") undefined
+
+cimpKappa :: Variable -> RTyp -> [SubC] -> [SubC]
+cimpKappa v ty ss = fmap (addAssumption (v, ty)) ss
+  where
+    addAssumption :: (Var, RTyp) -> SubC -> SubC
+    addAssumption z (SubC gs x y) = SubC (z : gs) x y
+
+coerceRTyp :: Type -> RTyp
+coerceRTyp (TForall _ _ _) = error "cannot coerce Forall to a RTyp"
+coerceRTyp (TRBase b0 (RKnown p1)) = error "wip coerce rtyp"
+
 sub :: Type -> Type -> Gen Constraint
 sub (TForall alpha1 k1 t1) (TForall alpha2 k2 t2)
   | k1 == k2 = sub t1 (substTyVar alpha2 (base (BTVar alpha1)) t2)
@@ -320,86 +345,140 @@ gensym = do
   put $ s {_next_fresh = r + 1}
   return $ "tmp." ++ show r
 
+-- Constraint synthesis (fixme: abstract this with the non-inference version)
+synthC :: Context -> Term -> Gen ([SubC], Type)
+synthC c t = synth1 c t
+  where
+    synth1 g (TTApp e tau) = do
+      t <- fresh g tau
+      syn_e <- synthC g e
+      let (c, TForall alpha k s) = syn_e
+      return (c, substTyVar alpha t s)
+    synth1 g (TVar x) = do
+      return ([], self x (getTbl (g ^. terms) x))
+    synth1 _ (TConst c) = do
+      return ([], prim c)
+    synth1 g (TApp e y) = do
+      synR <- synthC g e
+      let (c, TDepFn x s t) = synR
+      c1 <- checkC g (TVar y) s
+      return (c ++ c1, subst t x (PVar y))
+    synth1 g (TAnn e s) = do
+      t <- fresh g s
+      c <- checkC g e t
+      return (c, t)
+    synth1 _ _ = undefined
+
+-- Constraint checking (fixme: abstract this with the non-inference version)
+checkC :: Context -> Term -> Type -> Gen [SubC]
+checkC c t ty = check1 c t ty
+  where
+    check1 g (TTAbs alpha k e) (TForall a1 k1 t)
+      | k == k1 && alpha == a1 = checkC (types %~ tblSet alpha k $ g) e t
+    check1 g (TLam x e) (TDepFn x0 s t)
+      | x == x0 = do
+          c <- checkC (terms %~ tblSet x s $ g) e t
+          return $ cimpKappa x (coerceRTyp s) c
+    check1 g (TLet x e1 e2) t2 = do
+      (c1, t1) <- synthC g e1
+      c2 <- checkC (terms %~ tblSet x t1 $ g) e2 t2
+      return $ c1 ++ (cimpKappa x (coerceRTyp t1) c2)
+    check1 g (TCond x e1 e2) t = do
+      y <- gensym
+      c1 <- checkC g e1 t <&> cimpKappa y (coerceRTyp (TRBase BInt (trefine (PVar x))))
+      c2 <- checkC g e2 t <&> cimpKappa y (coerceRTyp (TRBase BInt (trefine (PNeg (PVar x)))))
+      return $ c1 ++ c2
+    check1 g (TRec x e1 s1 e2) t = do
+      t1 <- fresh g s1
+      let g1 = terms %~ tblSet x t1 $ g
+      c1 <- checkC g1 e1 t
+      c2 <- checkC g1 e2 t
+      return $ c1 ++ c2
+    check1 g e t = do
+      (c, s) <- synthC g e
+      c1 <- subKappa s t
+      return $ c ++ c1
+
 -- Algorithmic synthesis
 synth :: Context -> Term -> Gen (Constraint, Type)
 synth c t = synth1 c t
-
-synth1 g (TTApp e tau) = do
-  -- traceM "[0/4 ttapp]"
-  t <- fresh g tau
-  -- traceM "[1/4 ttapp]"
-  syn_e <- synth g e
-  -- traceM "[2/4 ttapp]"
-  let (c, TForall alpha k s) = syn_e
-  -- traceM "[3/4 ttapp]"
-  return (c, substTyVar alpha t s)
-synth1 g (TVar x) = do
-  -- traceM "[0/1 tvar]"
-  return (CPred $ PBool True, self x (getTbl (g ^. terms) x))
--- chapter 3 version:
--- return (CPred (PBool True), g x)
-synth1 _ (TConst c) = do
-  -- traceM "[0/1 tconst]"
-  return (CPred $ PBool True, prim c)
-synth1 g (TApp e y) = do
-  -- traceM $ "[0/4 tapp]" ++ show (TApp e y)
-  synR <- synth g e
-  -- traceM "[1/4 tapp]"
-  let (c, TDepFn x s t) = synR
-  -- traceM "[2/4 tapp]"
-  c1 <- check g (TVar y) s
-  -- traceM "[3/4 tapp]"
-  return (CAnd c c1, subst t x (PVar y))
-synth1 g (TAnn e s) = do
-  -- traceM "[0/3 tann]"
-  t <- fresh g s
-  -- traceM "[1/3 tann]"
-  c <- check g e t
-  -- traceM "[2/3 tann]"
-  return (c, t)
-synth1 _ _ = undefined
+  where
+    synth1 g (TTApp e tau) = do
+      -- traceM "[0/4 ttapp]"
+      t <- fresh g tau
+      -- traceM "[1/4 ttapp]"
+      syn_e <- synth g e
+      -- traceM "[2/4 ttapp]"
+      let (c, TForall alpha k s) = syn_e
+      -- traceM "[3/4 ttapp]"
+      return (c, substTyVar alpha t s)
+    synth1 g (TVar x) = do
+      -- traceM "[0/1 tvar]"
+      return (CPred $ PBool True, self x (getTbl (g ^. terms) x))
+    -- chapter 3 version:
+    -- return (CPred (PBool True), g x)
+    synth1 _ (TConst c) = do
+      -- traceM "[0/1 tconst]"
+      return (CPred $ PBool True, prim c)
+    synth1 g (TApp e y) = do
+      -- traceM $ "[0/4 tapp]" ++ show (TApp e y)
+      synR <- synth g e
+      -- traceM "[1/4 tapp]"
+      let (c, TDepFn x s t) = synR
+      -- traceM "[2/4 tapp]"
+      c1 <- check g (TVar y) s
+      -- traceM "[3/4 tapp]"
+      return (CAnd c c1, subst t x (PVar y))
+    synth1 g (TAnn e s) = do
+      -- traceM "[0/3 tann]"
+      t <- fresh g s
+      -- traceM "[1/3 tann]"
+      c <- check g e t
+      -- traceM "[2/3 tann]"
+      return (c, t)
+    synth1 _ _ = undefined
 
 -- Algorithmic checking
 check :: Context -> Term -> Type -> Gen Constraint
 check c t ty = check1 c t ty
-
-check1 g (TTAbs alpha k e) (TForall a1 k1 t)
-  | k == k1 && alpha == a1 = check (types %~ tblSet alpha k $ g) e t
-check1 g (TLam x e) (TDepFn x0 s t)
-  | x == x0 = do
-      -- traceM "[0/2 tlet]"
-      c <- check (terms %~ tblSet x s $ g) e t
-      -- traceM "[1/2 tlet]"
-      return $ cimp x s c
-check1 g (TLet x e1 e2) t2 = do
-  -- traceM $ "[0/3 tlet]" ++ show (TLet x e1 e2)
-  (c1, t1) <- synth g e1
-  -- traceM "[1/3 tlet]"
-  c2 <- check (terms %~ tblSet x t1 $ g) e2 t2
-  -- traceM "[2/3 tlet]"
-  return $ CAnd c1 (cimp x t1 c2)
-check1 g (TCond x e1 e2) t = do
-  -- traceM "[0/4 tcond]"
-  y <- gensym
-  -- traceM "[1/4 tcond]"
-  c1 <- check g e1 t <&> cimp y (TRBase BInt (trefine (PVar x)))
-  -- traceM "[2/4 tcond]"
-  c2 <- check g e2 t <&> cimp y (TRBase BInt (trefine (PNeg (PVar x))))
-  -- traceM "[3/4 tcond]"
-  return $ CAnd c1 c2
-check1 g (TRec x e1 s1 e2) t = do
-  t1 <- fresh g s1
-  let g1 = terms %~ tblSet x t1 $ g
-  c1 <- check g1 e1 t
-  c2 <- check g1 e2 t
-  return $ CAnd c1 c2
-check1 g e t = do
-  -- traceM "[0/3 checksynth]"
-  (c, s) <- synth g e
-  -- traceM "[1/3 checksynth]"
-  c1 <- sub s t
-  -- traceM "[2/3 checksynth]"
-  return $ CAnd c c1
+  where
+    check1 g (TTAbs alpha k e) (TForall a1 k1 t)
+      | k == k1 && alpha == a1 = check (types %~ tblSet alpha k $ g) e t
+    check1 g (TLam x e) (TDepFn x0 s t)
+      | x == x0 = do
+          -- traceM "[0/2 tlet]"
+          c <- check (terms %~ tblSet x s $ g) e t
+          -- traceM "[1/2 tlet]"
+          return $ cimp x s c
+    check1 g (TLet x e1 e2) t2 = do
+      -- traceM $ "[0/3 tlet]" ++ show (TLet x e1 e2)
+      (c1, t1) <- synth g e1
+      -- traceM "[1/3 tlet]"
+      c2 <- check (terms %~ tblSet x t1 $ g) e2 t2
+      -- traceM "[2/3 tlet]"
+      return $ CAnd c1 (cimp x t1 c2)
+    check1 g (TCond x e1 e2) t = do
+      -- traceM "[0/4 tcond]"
+      y <- gensym
+      -- traceM "[1/4 tcond]"
+      c1 <- check g e1 t <&> cimp y (TRBase BInt (trefine (PVar x)))
+      -- traceM "[2/4 tcond]"
+      c2 <- check g e2 t <&> cimp y (TRBase BInt (trefine (PNeg (PVar x))))
+      -- traceM "[3/4 tcond]"
+      return $ CAnd c1 c2
+    check1 g (TRec x e1 s1 e2) t = do
+      t1 <- fresh g s1
+      let g1 = terms %~ tblSet x t1 $ g
+      c1 <- check g1 e1 t
+      c2 <- check g1 e2 t
+      return $ CAnd c1 c2
+    check1 g e t = do
+      -- traceM "[0/3 checksynth]"
+      (c, s) <- synth g e
+      -- traceM "[1/3 checksynth]"
+      c1 <- sub s t
+      -- traceM "[2/3 checksynth]"
+      return $ CAnd c c1
 
 -- Selfificaiton
 self :: Variable -> Type -> Type
