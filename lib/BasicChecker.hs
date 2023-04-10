@@ -11,7 +11,7 @@ import Control.Monad.State
 import Data.Functor ((<&>))
 import Data.List (intercalate)
 import Debug.Trace (trace, traceM)
-import Refinements (RTyp, SubC (..), Var)
+import qualified Refinements as R
 import Util
 
 -- Syntax for STLC with QF-UFLIA
@@ -292,29 +292,62 @@ substTyVar aFrom tTo (TForall tv k t)
   | otherwise = TForall tv k (substTyVar aFrom tTo t)
 
 -- Algorithmic subtyping: Generate Imp Constraints
-subKappa :: Type -> Type -> Gen [SubC]
+subKappa :: Type -> Type -> Gen [R.SubC]
 subKappa (TForall alpha1 k1 t1) (TForall alpha2 k2 t2)
   -- Type abstraction: Replace the type variables and enter
   | k1 == k2 = subKappa t1 (substTyVar alpha2 (base (BTVar alpha1)) t2)
 subKappa x@(TRBase b0 (RKnown p1)) y@(TRBase b1 (RKnown p2))
   | b0 == b1 = do
       freshVar <- gensym
-      return [SubC [] (coerceRTyp x) (coerceRTyp y)]
+      return [R.SubC [] (coerceRTyp x) (coerceRTyp y)]
 subKappa (TDepFn x1 s1 t1) (TDepFn x2 s2 t2) = do
   ci <- subKappa s2 s1
   co <- subKappa (subst t1 x1 (PVar x2)) t2
   return $ ci ++ cimpKappa x2 (coerceRTyp s2) co
 subKappa t1 t2 = trace ("sub of " ++ show t1 ++ " <: " ++ show t2 ++ " undefined") undefined
 
-cimpKappa :: Variable -> RTyp -> [SubC] -> [SubC]
-cimpKappa v ty ss = fmap (addAssumption (v, ty)) ss
+cimpKappa :: Variable -> R.RTyp -> [R.SubC] -> [R.SubC]
+cimpKappa v ty = fmap (addAssumption (v, ty))
   where
-    addAssumption :: (Var, RTyp) -> SubC -> SubC
-    addAssumption z (SubC gs x y) = SubC (z : gs) x y
+    addAssumption :: (R.Var, R.RTyp) -> R.SubC -> R.SubC
+    addAssumption z (R.SubC gs x y) = R.SubC (z : gs) x y
 
-coerceRTyp :: Type -> RTyp
-coerceRTyp (TForall _ _ _) = error "cannot coerce Forall to a RTyp"
-coerceRTyp (TRBase b0 (RKnown p1)) = error "wip coerce rtyp"
+coerceRTyp :: Type -> R.RTyp
+coerceRTyp (TForall _ _ _) = error "cannot coerce polymorphic functions"
+coerceRTyp (TRBase b (RKnown (PHornApp (HornVariable var b1 listoftypes) listofvars)))
+  | b == b1 = R.RTyp (coerceBaseType b) (R.RK var (fmap coerceRTyp typetable))
+  where
+    typetable = foldl (\tsf (var, typ) -> tblSet var typ tsf) (emptyTable Nothing) (zip listofvars listoftypes)
+coerceRTyp (TRBase b0 (RKnown p1)) = R.RTyp (coerceBaseType b0) (R.RP $ coercePred p1)
+coerceRTyp (TDepFn v t1 t2) = error "not sure how to coerce dependent functions"
+
+coercePred :: Predicate -> R.Pred
+coercePred (PVar v) = R.PVar v
+coercePred (PBool b) = R.PBool b
+coercePred (PInt i) = R.PInt i
+coercePred (PInterpOp op p1 p2) = R.PInterpOp (p op) (coercePred p1) (coercePred p2)
+  where
+    p Equal = R.Equal
+    p Add = R.Add
+    p Sub = R.Sub
+    p Leq = R.Leq
+    p Lt = R.Lt
+    p Geq = R.Geq
+    p Gt = R.Gt
+coercePred (PAnd p1 p2) = R.PAnd (coercePred p1) (coercePred p2)
+coercePred (POr p1 p2) = R.POr (coercePred p1) (coercePred p2)
+coercePred (PNeg p) = R.PNeg (coercePred p)
+coercePred (PUninterpFun v p) = R.PUninterpFun v (coercePred p)
+coercePred (PHornApp _ _) = error "not sure how to coerce horn app in nested predicate position"
+
+coerceBaseType :: BasicType -> R.Typ
+coerceBaseType BInt = R.I
+coerceBaseType BBool = R.B
+
+-- -- | refinements
+-- data Refinement
+--   = RP Pred
+--   | RK String (Table Var RTyp)
 
 sub :: Type -> Type -> Gen Constraint
 sub (TForall alpha1 k1 t1) (TForall alpha2 k2 t2)
@@ -346,7 +379,7 @@ gensym = do
   return $ "tmp." ++ show r
 
 -- Constraint synthesis (fixme: abstract this with the non-inference version)
-synthC :: Context -> Term -> Gen ([SubC], Type)
+synthC :: Context -> Term -> Gen ([R.SubC], Type)
 synthC c t = synth1 c t
   where
     synth1 g (TTApp e tau) = do
@@ -370,7 +403,7 @@ synthC c t = synth1 c t
     synth1 _ _ = undefined
 
 -- Constraint checking (fixme: abstract this with the non-inference version)
-checkC :: Context -> Term -> Type -> Gen [SubC]
+checkC :: Context -> Term -> Type -> Gen [R.SubC]
 checkC c t ty = check1 c t ty
   where
     check1 g (TTAbs alpha k e) (TForall a1 k1 t)
@@ -382,7 +415,7 @@ checkC c t ty = check1 c t ty
     check1 g (TLet x e1 e2) t2 = do
       (c1, t1) <- synthC g e1
       c2 <- checkC (terms %~ tblSet x t1 $ g) e2 t2
-      return $ c1 ++ (cimpKappa x (coerceRTyp t1) c2)
+      return $ c1 ++ cimpKappa x (coerceRTyp t1) c2
     check1 g (TCond x e1 e2) t = do
       y <- gensym
       c1 <- checkC g e1 t <&> cimpKappa y (coerceRTyp (TRBase BInt (trefine (PVar x))))
@@ -569,6 +602,16 @@ tyckProgram p = foldl (\tsf fn -> tblSet fn (tyckF fn) tsf) (emptyTable Nothing)
     gamma = Context ctxTy (emptyTable Nothing)
     bods = p ^. (bodies . dom)
     tyckF fn = evalState (check gamma (getTbl (p ^. bodies) fn) (getTbl (p ^. decls) fn)) defaultState
+
+-- Typecheck all bodies in a program
+tyckProgramImp :: Program -> Table FnName [R.SubC]
+tyckProgramImp p = foldl (\tsf fn -> tblSet fn (tyckFC fn) tsf) (emptyTable Nothing) bods
+  where
+    -- For now, no type variables ;)
+    ctxTy = foldl (\csf fn -> tblSet fn (getTbl (p ^. decls) fn) csf) (emptyTable Nothing) (p ^. (decls . dom))
+    gamma = Context ctxTy (emptyTable Nothing)
+    bods = p ^. (bodies . dom)
+    tyckFC fn = evalState (checkC gamma (getTbl (p ^. bodies) fn) (getTbl (p ^. decls) fn)) defaultState
 
 -- Template all bodies in a program
 templateProgram :: Program -> Program

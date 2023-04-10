@@ -1,16 +1,18 @@
 module DebugMode where
 
-import BasicChecker (FnName, Program, templateProgram)
+import BasicChecker (FnName, Program, templateProgram, tyckProgramImp)
+import Control.Lens ((^.))
 import HindleyMilner (Subst, UnifConstraint, collectArity, constrain, preprocessVariables, rewriteTerms, showConstraints, unify)
+import Refinements (SubC)
 import System.Process
-import Util (Table, bToList, getRng, todo)
+import Util (Table, bToList, dom, getRng, getTbl, todo)
 
-data DebugState = DebugState {_working :: Program, _constraints :: Table FnName [UnifConstraint], _subst :: Subst, _imp :: Program}
+data DebugState = DebugState {_working :: Program, _constraints :: Table FnName [UnifConstraint], _subst :: Subst, _impcs :: Table FnName [SubC], _imp :: Program}
 
 debugMode :: Program -> IO ()
 debugMode p = do
   callCommand "cowsay what did you break this time"
-  let state = DebugState p (error "HM constraints not generated") (error "subst not generated") (error "imp program not generated")
+  let state = DebugState p (error "HM constraints not generated") (error "subst not generated") (error "impcs not generated") (error "imp program not generated")
   srfProgram state >>= doRepl
   return ()
   where
@@ -23,6 +25,7 @@ debugMode p = do
       putStrLn " - (u)nification (Hindley Milner)"
       putStrLn " - (a)pply subst (Hindley Milner)"
       putStrLn " - (t)emplate holes (Refinement Inference)"
+      putStrLn " - bidirectional check to (i)mp (Refinement Inference)"
       putStrLn " - e(x)it"
       putStr "> "
       cmd <- getLine
@@ -34,6 +37,7 @@ debugMode p = do
         "u" -> srfUnify s >>= doRepl
         "a" -> srfApplySubst s >>= doRepl
         "t" -> srfTemplate s >>= doRepl
+        "i" -> srfToImp s >>= doRepl
         "x" -> callCommand "cowsay I sure hope that fixes it!" >> return s
         _ -> callCommand "cowsay learn 2 read son" >> doRepl s
 
@@ -96,3 +100,11 @@ srfTemplate p = do
   print newProgram
   putStrLn ""
   return p {_working = newProgram}
+
+srfToImp :: DebugState -> IO DebugState
+srfToImp p = do
+  let impcs = tyckProgramImp (_working p)
+  msg "imp constraints"
+  mapM_ (\x -> putStrLn ("-- " ++ x ++ ":") >> (mapM_ print . getTbl impcs $ x)) (impcs ^. dom)
+  putStrLn ""
+  return p {_impcs = impcs}

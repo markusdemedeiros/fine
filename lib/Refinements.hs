@@ -1,6 +1,11 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs #-}
+
 module Refinements where
 
-import Util (Table)
+import Control.Lens.Operators ((^.))
+import Data.List (intercalate)
+import Util (Table, bToList, dom, getTbl)
 
 -- | Constraint system for refinement types
 -- | Top-level program should produce this
@@ -15,8 +20,8 @@ data Cu
 
 -- | types
 data Typ
-  = I Int
-  | B Bool
+  = I -- Int
+  | B -- Bool
   | C Cu
 
 -- | representation of variables from the syntax
@@ -60,7 +65,6 @@ data Pred
   | PAnd Pred Pred
   | POr Pred Pred
   | PNeg Pred
-  | PIf Pred Pred Pred
   | PUninterpFun Var Pred -- ??
   deriving (Eq)
 
@@ -77,3 +81,43 @@ type G = [(Var, RTyp)]
 
 -- | subtype constraint
 data SubC = SubC G RTyp RTyp
+
+instance Show SubC where
+  show (SubC g t0 t1) = "[" ++ intercalate ", " (fmap (\(v, t) -> v ++ ": " ++ show t) g) ++ "] |- " ++ show t0 ++ " <:" ++ show t1
+
+instance Show RTyp where
+  show (RTyp t r) = show t ++ "{" ++ show r ++ "}"
+
+instance Show Typ where
+  show I = "int"
+  show B = "bool"
+  show (C cu) = show cu
+
+instance Show Cu where
+  show (V u) = u
+  show (F tys tyr) = show tys ++ " --> " ++ show tyr
+
+instance Show Refinement where
+  show (RP p) = show p
+  show (RK k t) = k ++ "(" ++ intercalate ", " showkappa ++ ")"
+    where
+      showkappa = (\arg -> arg ++ ": " ++ show (getTbl t arg)) <$> bToList (t ^. dom)
+
+instance Show Pred where
+  show (PVar v) = v
+  show (PBool b) = show b
+  show (PInt i) = show i
+  show (PInterpOp op p1 p2) = "(" ++ show op ++ " " ++ show p1 ++ " " ++ show p2 ++ ")"
+  show (PAnd p1 p2) = "(" ++ show p1 ++ " && " ++ show p2 ++ ")"
+  show (POr p1 p2) = "(" ++ show p1 ++ " || " ++ show p2 ++ ")"
+  show (PNeg p) = "!(" ++ show p ++ ")"
+  show (PUninterpFun v p) = v ++ "(" ++ show p ++ ")"
+
+instance Show InterpOp where
+  show Equal = "="
+  show Add = "+"
+  show Sub = "-"
+  show Leq = "<="
+  show Lt = "<"
+  show Geq = ">="
+  show Gt = ">"
