@@ -5,14 +5,17 @@
 module Main where
 
 import BasicChecker (Program, binder)
-import DebugMode (debugMode)
+import DebugMode (Debuggable, debugMode)
 import HindleyMilner
+import qualified Imp as I
 import Surface
+import Util (todo)
 
 main :: IO ()
 main = putStrLn "click https://www.youtube.com/watch?v=dQw4w9WgXcQ to access program (or enter DebugMode from the repl)"
 
 -- | All Srf functions must have a type! But not all types must have a term
+debug :: (Debuggable x) => x -> IO ()
 debug = debugMode
 
 prog1 :: Program
@@ -133,3 +136,8 @@ prog8 = parse $ do
   _val "main" $ refn "unused" int int
   _let "main" [] $
     var "test"
+
+-- We're also able to debug Imp programs
+
+imp1 :: I.Program
+imp1 = todo

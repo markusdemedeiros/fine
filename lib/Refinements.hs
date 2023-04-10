@@ -37,9 +37,16 @@ type Env = [(Var, Typ)]
 data Expr
   = EV Var
   | EN Int
-  | EA Expr Expr
-  | EM Int Expr
+  | EA Expr Expr -- Add
+  | EM Int Expr -- Multiply
   | EF Var [Expr]
+
+instance Show Expr where
+  show (EV v) = v
+  show (EN i) = show i
+  show (EA e1 e2) = "(" ++ show e1 ++ " + " ++ show e2 ++ ") "
+  show (EM i e) = "(" ++ show i ++ " * " ++ show e ++ ") "
+  show (EF f vs) = f ++ "(" ++ intercalate ", " (fmap show vs) ++ ") "
 
 data InterpOp
   = Equal
@@ -83,7 +90,7 @@ type G = [(Var, RTyp)]
 data SubC = SubC G RTyp RTyp
 
 instance Show SubC where
-  show (SubC g t0 t1) = "[" ++ intercalate ", " (fmap (\(v, t) -> v ++ ": " ++ show t) g) ++ "] |- " ++ show t0 ++ " <:" ++ show t1
+  show (SubC g t0 t1) = "[" ++ intercalate ", " (fmap (\(v, t) -> v ++ ": " ++ show t) g) ++ "] |- " ++ show t0 ++ " <: " ++ show t1
 
 instance Show RTyp where
   show (RTyp t r) = show t ++ "{" ++ show r ++ "}"
