@@ -6,7 +6,7 @@ module Util where
 
 import Control.Lens (makeLenses, (%~), (^.))
 import Control.Lens.Getter (Getter (..), to)
-import Data.List (intercalate, nub)
+import Data.List (delete, intercalate, nub)
 import Data.Maybe
 import Debug.Trace
 
@@ -31,6 +31,9 @@ bToList (BSet l) = l
 
 bEmpty :: BSet a
 bEmpty = BSet []
+
+bRemove :: Eq a => a -> BSet a -> BSet a
+bRemove x (BSet l) = BSet (delete x l)
 
 bContains :: (Eq a) => a -> BSet a -> Bool
 bContains x (BSet l) = x `elem` l
@@ -110,6 +113,9 @@ getRng (Table d m _) = fmap m d
 
 getDef :: Table d r -> Maybe r
 getDef (Table _ _ d) = d
+
+rmEntry :: (Eq d) => Table d r -> d -> Table d r
+rmEntry (Table dom m d) x = Table (bRemove x dom) m d
 
 -- Gets a partial function that looks up table entries
 getTbl :: (Eq d, Show d) => Table d r -> (d -> r)

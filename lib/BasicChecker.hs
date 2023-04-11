@@ -469,7 +469,7 @@ synth c t = synth1 c t
       c <- check g e t
       -- traceM "[2/3 tann]"
       return (c, t)
-    synth1 _ _ = undefined
+    synth1 c t = error $ "undefined synth of " ++ show t
 
 -- Algorithmic checking
 check :: Context -> Term -> Type -> Gen Constraint
@@ -478,7 +478,7 @@ check c t ty = check1 c t ty
     check1 g (TTAbs alpha k e) (TForall a1 k1 t)
       | k == k1 && alpha == a1 = check (types %~ tblSet alpha k $ g) e t
     check1 g (TLam x e) (TDepFn x0 s t)
-      | x == x0 = do
+      | (x == x0) || (x0 == "unused") = do
           -- traceM "[0/2 tlet]"
           c <- check (terms %~ tblSet x s $ g) e t
           -- traceM "[1/2 tlet]"

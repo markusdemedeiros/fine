@@ -5,6 +5,7 @@ module Imp where
 
 import Control.Lens (Lens', lens, makeLenses, (%~), (&), (^.))
 import Data.List (intercalate)
+import Debug.Trace
 import Refinements
 import Util
 
@@ -82,6 +83,47 @@ toImp = Program . fmap toImpBlock
     toImpSet (RTyp tau (RP p)) = Assert p
     toImpSet (RTyp tau (RK kappa substs)) = SetTuple (Kappa kappa substs) (binder : bToList (substs ^. dom))
 
--- Turn a constraint set into a read-write once constraint set
+-- Turn a constraint set into a read-write-once constraint set
+--  Everything should be cloned (that way the whole set refers to the same variable)!
+--  clones only! clones 4eva!
 clone :: [(G, RTyp, RTyp)] -> [(G, RTyp, RTyp)]
-clone = todo
+clone locs = locs >>= cloneBinding
+  where
+    cloneBinding (g, rt0, rt1) =
+      let (kappaTable, rt0' : gs') = countKappas $ collectReads (g, rt0, rt1)
+          rtable = makeRenameTables kappaTable
+          g' = zip (fmap fst g) gs'
+       in [(g', rt0', renameKappas rt1 rtbl) | rtbl <- rtable]
+
+-- Anyways, here's a really dumb way to do this...
+makeRenameTables :: Table String Int -> [Table String String]
+makeRenameTables t =
+  case bToList (t ^. dom) of
+    [] -> [emptyTable Nothing]
+    (s : _) -> [tblSet s (cloneName s z) t' | t' <- makeRenameTables (rmEntry t s), z <- [1 .. (getTbl t s)]]
+
+renameKappas :: RTyp -> Table String String -> RTyp
+renameKappas r@(RTyp _ (RP _)) _ = r
+renameKappas (RTyp ty (RK s sArgs)) tbl = RTyp ty (RK nm sArgs)
+  where
+    nm
+      | bContains s (tbl ^. dom) = getTbl tbl s
+      | otherwise = cloneName s 1
+
+-- Collect all RTyps in read position
+collectReads :: (G, RTyp, RTyp) -> [RTyp]
+collectReads (g, r, _) = r : fmap snd g
+
+-- Get the list of refinement variables on the lhs of any clone (combine them with the list monad to get all possible clonings)
+countKappas :: [RTyp] -> (Table String Int, [RTyp])
+countKappas = foldr countR (emptyTable (Just 0), [])
+
+-- Update the counter for a kappa, and rewrite a term to include that kappa
+countR :: RTyp -> (Table String Int, [RTyp]) -> (Table String Int, [RTyp])
+countR r@(RTyp _ (RP _)) (tbl, rsf) = (tbl, r : rsf)
+countR (RTyp ty (RK s sArgs)) (tbl, rsf) = (tblSet s n tbl, RTyp ty (RK (cloneName s n) sArgs) : rsf)
+  where
+    n = 1 + getTbl tbl s
+
+cloneName :: String -> Int -> String
+cloneName s n = "clone." ++ show n ++ "." ++ s
