@@ -458,7 +458,7 @@ tyQuant _ = []
 rewriteTerms :: Subst -> Program -> Program
 rewriteTerms s p = p {_bodies = rewrittenBodies}
   where
-    -- holy shit man just use a monad PLEASE I BEG YOu
+    -- holy crap man just use a monad PLEASE I BEG YOu
     rewrittenBodies :: Table FnName Term
     rewrittenBodies = fst $ foldl (\(tsf, i) fn -> let (t', i') = rewriteTerm s [] i (getTbl (p ^. bodies) fn) in (tblSet fn t' tsf, i')) ((emptyTable Nothing), 0) (bToList (p ^. (bodies . dom)))
 
