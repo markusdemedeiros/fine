@@ -15,10 +15,6 @@ todo = error "explicit todo encountered"
 -------------------------------------------------------------------------------
 ------- Bastardized Sets and Maps
 
--- MY SETS WILL NEVER BE HASH SETS
--- THEY WILL NEVER BOW TO YOUR CRAVEN, CAPITALISTIC, EFFICINCY FETISH
--- FUCK THE PIGS // LISTS 4 LYFE
-
 -- Bastardized Set
 data BSet a where
   BSet :: [a] -> BSet a

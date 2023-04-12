@@ -5,7 +5,7 @@
 
 -- Credit: A lot of this is built off of the what4 tutorial
 -- https://hackage.haskell.org/package/what4
--- Honestly I don't know shit about SMT solvers lmao
+-- Honestly I don't know anything about SMT solvers lmao
 
 module Solve where
 
