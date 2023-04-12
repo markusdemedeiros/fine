@@ -221,7 +221,7 @@ prim (CNBool False) = TRBase BBool $ RKnown $ PNeg (PVar binder)
 
 -- iprim(i) := int(v: v == i)
 iprim :: Int -> Type
-iprim = TRBase BInt . RKnown . PInterpOp Equal (PVar "v") . PInt
+iprim = TRBase BInt . RKnown . PInterpOp Equal (PVar "nu") . PInt
 
 -- oprim(op) := x:int -> (y:int -> int{v: v=x+y})
 oprim :: InterpOp -> Type

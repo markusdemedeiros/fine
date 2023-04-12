@@ -131,11 +131,13 @@ prog7 = parse $ do
 
 prog8 :: Program
 prog8 = parse $ do
-  _val "test" $ refn "unused" (tyv "a") (tyv "a")
+  _val "id" $ refn "z" (tyv "a") (tyv "a")
+  _let "id" ["z"] $
+    var "z"
 
   _val "main" $ refn "unused" int int
   _let "main" [] $
-    var "test"
+    var "id"
 
 -- We're also able to debug Imp programs
 

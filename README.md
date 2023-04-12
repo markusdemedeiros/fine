@@ -9,4 +9,4 @@
 
 ``cabal run``
 
-Load the ``Main`` file and execute program ``progX`` with ``debug progX``. 
+Load the ``Main`` file in the repl (``cabal repl``) and execute program ``progX`` with ``debug progX``. 

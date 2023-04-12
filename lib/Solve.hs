@@ -82,7 +82,8 @@ magic k = do
   --     )
   --     (emptyTable Nothing)
   --     (bToList $ getRng cTable)
-  cbody <- genConstraint cTable sym k
+  let tyvars = tyckVars uniqueC
+  cbody <- genConstraint tyvars cTable sym uniqueC
 
   -- verification condition: check to see if a counterexample exists
   cvc <- notPred sym cbody
@@ -95,14 +96,57 @@ magic k = do
         Unsat _ -> putStrLn "Type check, please click https://www.youtube.com/watch?v=dQw4w9WgXcQ as reward."
         Unknown -> putStrLn "Solver failed, please click https://www.youtube.com/watch?v=dQw4w9WgXcQ to solve the halting problem."
   where
-    genConstraint ts sym (CAnd c1 c2) = do
-      c1' <- genConstraint ts sym c1
-      c2' <- genConstraint ts sym c2
+    -- Basic type checker for variables
+    tyckVars :: Constraint -> Table String B.BasicType
+    tyckVars = tvc (emptyTable Nothing)
+      where
+        tvc :: Table String B.BasicType -> Constraint -> Table String B.BasicType
+        -- Note that predicates do not bind variables (uninterp fns are globally scoped)
+        tvc t (B.CPred _) = t
+        tvc t (B.CAnd p1 p2) = tvc (tvc t p1) p2
+        tvc t (B.CFun v bty _ c) = tvc (tblSet v bty t) c
+
+    -- get the type of an expression in place (as long as we know the types of the variables)
+    -- Left = function types
+    -- Right = not a function (some may call this a value)
+    tyck :: Table String B.BasicType -> B.Predicate -> Either [B.BasicType] B.BasicType
+    tyck t (B.PVar v) = Right (getTbl t v)
+    tyck t (B.PBool _) = Right B.BBool
+    tyck t (B.PInt _) = Right B.BInt
+    tyck t (B.PInterpOp B.Equal p1 p2) = case (tyck t p1, tyck t p2) of
+      (Right tp1, Right tp2) -> if tp1 == tp2 then Right B.BBool else error "cannot typecheck equal"
+      _ -> error "cannot typecheck equal"
+    tyck t (B.PInterpOp op p1 p2) =
+      case (tyck t p1, tyck t p2) of
+        (Right B.BInt, Right B.BInt) -> Right tyR
+        _ -> error "cannot typecheck other interp op"
+      where
+        tyR = case op of
+          B.Add -> B.BInt
+          B.Sub -> B.BInt
+          _ -> B.BBool
+    tyck t (B.PAnd p1 p2) =
+      case (tyck t p1, tyck t p2) of
+        (Right B.BBool, Right B.BBool) -> Right B.BBool
+        _ -> error "cannot typecheck and"
+    tyck t (B.POr p1 p2) =
+      case (tyck t p1, tyck t p2) of
+        (Right B.BBool, Right B.BBool) -> Right B.BBool
+        _ -> error "cannot typecheck or"
+    tyck t (B.PNeg p1) =
+      case tyck t p1 of
+        Right B.BBool -> Right B.BBool
+        _ -> error "cannot typecheck neg"
+    tyck t (B.PUninterpFun _ _) = error "basic typechecker unimplmented for Uninterp fns"
+
+    genConstraint tyvars ts sym (CAnd c1 c2) = do
+      c1' <- genConstraint tyvars ts sym c1
+      c2' <- genConstraint tyvars ts sym c2
       orPred sym c1' c2'
-    genConstraint ts sym (CPred p) = genPredBool sym todo p
-    genConstraint ts sym (CFun v bty p c) = do
-      p' <- genPredBool sym todo p
-      c' <- genConstraint ts sym c
+    genConstraint tyvars ts sym (CPred p) = genPredBool tyvars sym todo p
+    genConstraint tyvars ts sym (CFun v bty p c) = do
+      p' <- genPredBool tyvars sym todo p
+      c' <- genConstraint tyvars ts sym c
       impl <- impliesPred sym p' c'
       case bty of
         B.BBool -> do
@@ -112,33 +156,54 @@ magic k = do
           bv <- freshBoundVar sym (safeSymbol v) BaseIntegerRepr
           forallPred sym bv impl
 
-    genPredBool sym vts (B.PVar v) = do
+    genPredBool tyvars sym vts (B.PVar v) = do
       bv <- freshBoundVar sym (safeSymbol v) BaseBoolRepr
       return $ varExpr sym bv
-    genPredBool sym vts (B.PBool True) = return $ truePred sym
-    genPredBool sym vts (B.PBool False) = return $ falsePred sym
-    genPredBool sym vts (B.PInterpOp op p1 p2) = error "interp ops brokey"
-    genPredBool sym vts (B.PAnd p1 p2) = do
-      p1' <- genPredBool sym vts p1
-      p2' <- genPredBool sym vts p2
+    genPredBool tyvars sym vts (B.PBool True) = return $ truePred sym
+    genPredBool tyvars sym vts (B.PBool False) = return $ falsePred sym
+    genPredBool tyvars sym vts (B.PInterpOp B.Equal p1 p2)
+      | tyck tyvars p1 == Right B.BBool = do
+          p1' <- genPredBool tyvars sym vts p1
+          p2' <- genPredBool tyvars sym vts p2
+          isEq sym p1' p2'
+      | otherwise = do
+          p1' <- genPredInt tyvars sym vts p1
+          p2' <- genPredInt tyvars sym vts p2
+          isEq sym p1' p2'
+    genPredBool tyvars sym vts (B.PInterpOp op p1 p2) = do
+      p1' <- genPredInt tyvars sym vts p1
+      p2' <- genPredInt tyvars sym vts p2
+      case op of
+        B.Lt -> intLt sym p1' p2'
+        B.Gt -> intLe sym p1' p2' >>= notPred sym
+        B.Leq -> intLe sym p1' p2'
+        B.Geq -> intLt sym p1' p2' >>= notPred sym
+    genPredBool tyvars sym vts (B.PAnd p1 p2) = do
+      p1' <- genPredBool tyvars sym vts p1
+      p2' <- genPredBool tyvars sym vts p2
       andPred sym p1' p2'
-    genPredBool sym vts (B.POr p1 p2) = do
-      p1' <- genPredBool sym vts p1
-      p2' <- genPredBool sym vts p2
+    genPredBool tyvars sym vts (B.POr p1 p2) = do
+      p1' <- genPredBool tyvars sym vts p1
+      p2' <- genPredBool tyvars sym vts p2
       orPred sym p1' p2'
-    genPredBool sym vts (B.PNeg p) = do
-      p' <- genPredBool sym vts p
+    genPredBool tyvars sym vts (B.PNeg p) = do
+      p' <- genPredBool tyvars sym vts p
       notPred sym p'
-    genPredBool sym vts (B.PUninterpFun f p) = error "uninterpreted function verification is broken please verify something simpler tysm"
-    genPredBool sym vts (B.PHornApp _ _) = error "plz apply your horn variables"
+    genPredBool tyvars sym vts (B.PUninterpFun f p) = error "uninterpreted function verification is broken please verify something simpler tysm"
+    genPredBool tyvars sym vts (B.PHornApp _ _) = error "plz apply your horn variables"
 
-    genPredInt sym vts (B.PVar v) = do
+    genPredInt tyvars sym vts (B.PVar v) = do
       bv <- freshBoundVar sym (safeSymbol v) BaseIntegerRepr
       return $ varExpr sym bv
-    genPredInt sym vts (B.PInt i) = intLit sym (toInteger i)
-    genPredInt sym vts (B.PInterpOp op p1 p2) = error "interp ops brokey"
-    genPredInt sym vts (B.PUninterpFun f p) = error "uninterpreted function verification is broken please verify something simpler tysm"
-    genPredInt sym vts (B.PHornApp _ _) = error "plz apply your horn variables"
+    genPredInt tyvars sym vts (B.PInt i) = intLit sym (toInteger i)
+    genPredInt tyvars sym vts (B.PInterpOp op p1 p2) = do
+      p1' <- genPredInt tyvars sym vts p1
+      p2' <- genPredInt tyvars sym vts p2
+      case op of
+        B.Add -> intAdd sym p1' p2'
+        B.Sub -> intSub sym p1' p2'
+    genPredInt tyvars sym vts (B.PUninterpFun f p) = error "uninterpreted function verification is broken please verify something simpler tysm"
+    genPredInt tyvars sym vts (B.PHornApp _ _) = error "plz apply your horn variables"
 
     -- Rewrite the program to avoid scoping problems (use a monad idiot)
     -- Return the new list of variables
@@ -147,10 +212,10 @@ magic k = do
       let (c1', i', t') = uniquifyConstraint (c1, i, t)
           (c2', i'', t'') = uniquifyConstraint (c2, i', t')
        in (CAnd c1' c2', i'', t'')
-    setPredVariables (CPred p, i, t) =
+    uniquifyConstraint (CPred p, i, t) =
       let (p', i', t') = uniquifyPred (p, i, t)
        in (CPred p', i', t')
-    setPredVariables (CFun v bty p c, i, t) =
+    uniquifyConstraint (CFun v bty p c, i, t) =
       let v' = "uv" ++ show i ++ "." ++ v
           i' = i + 1
           t' = tblSet v (v', bty) t
